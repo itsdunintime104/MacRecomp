@@ -1,0 +1,29 @@
+DIR=$(cd "$(dirname "$0")" && pwd)
+@ENV_PREFIX@_APP="${@ENV_PREFIX@_APP:-$DEFAULT_@ENV_PREFIX@_APP}"
+export @ENV_PREFIX@_APP
+GAME="$@ENV_PREFIX@_APP/Contents/MacOS/@GAME_EXE@"
+if [ ! -f "$GAME" ]; then
+    MSG="@GAME_TITLE@ was not found at: $@ENV_PREFIX@_APP. Install it from Steam, or set @ENV_PREFIX@_APP to its .app bundle."
+    echo "@APP_NAME@: $MSG" >&2
+    if [ "${@ENV_PREFIX@RECOMP_NO_GUI:-}" != 1 ]; then
+        osascript - "$MSG" >/dev/null 2>&1 <<'APPLESCRIPT' || true
+on run argv
+    display alert "@APP_NAME@" message (item 1 of argv)
+end run
+APPLESCRIPT
+    fi
+    exit 1
+fi
+LOGDIR="$HOME/Library/Logs/@SUPPORT_DIR@"
+mkdir -p "$LOGDIR"
+# Keep the newest 20 logs; the run below adds one more.
+ls -1t "$LOGDIR"/run-*.log 2>/dev/null | tail -n +20 | while IFS= read -r old; do rm -f "$old"; done
+ls -1t "$LOGDIR"/frames-*.csv 2>/dev/null | tail -n +20 | while IFS= read -r old; do rm -f "$old"; done
+STAMP=$(date +%Y-%m-%d_%H%M%S)
+# Frame times go to a CSV next to the run log only when asked: @ENV_PREFIX@RECOMP_FRAMELOG=1,
+# or RECOMP_FRAMELOG=<file> to choose the file.
+if [ "${@ENV_PREFIX@RECOMP_FRAMELOG:-}" = 1 ]; then
+    : "${RECOMP_FRAMELOG:=$LOGDIR/frames-$STAMP.csv}"
+fi
+[ -n "${RECOMP_FRAMELOG:-}" ] && export RECOMP_FRAMELOG
+exec "$DIR/@GAME_ID@" "$GAME" >"$LOGDIR/run-$STAMP.log" 2>&1

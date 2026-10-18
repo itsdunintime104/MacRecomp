@@ -1,0 +1,7 @@
+build.nosync/
+generated.nosync/
+orig.nosync/
+.venv
+__pycache__/
+*.pyc
+.DS_Store
