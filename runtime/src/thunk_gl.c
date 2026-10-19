@@ -166,6 +166,13 @@ void imp__glDrawArrays(void)
     g_esp += 4;
 }
 
+/* Imported by LEGO Marvel only, so it is not in the generated thunks. */
+void imp__glGetError(void)
+{
+    g_eax = glGetError();
+    g_esp += 4;
+}
+
 /* ---- textures ------------------------------------------------------------ */
 
 /* Bytes per pixel of a client-memory image, or 0 for a format/type pair not

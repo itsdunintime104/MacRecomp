@@ -2,7 +2,8 @@
 
 The engine file `feral_frontend.toml` names the functions and data the runtime replaces, calls or
 reads. Functions are found in a target binary by a masked byte signature (taken from the reference
-build); data addresses are found as PIC base + displacement inside those functions.
+build); data addresses are found as PIC base + displacement of the nth matching instruction inside
+a named anchor function.
 
     python -m tools.game.feral refresh <reference binary> [toml]
 """
@@ -25,8 +26,15 @@ from tools.hobbit import macho
 DEFAULT_TOML = Path(__file__).resolve().parent / "feral_frontend.toml"
 SIG_BYTES = 96
 CALL_NEXT = b"\xe8\x00\x00\x00\x00"  # call $+5, the PIC base idiom
-_CALL_OPCODES = (0xE8, 0xE9)
 _ADDR_MASK = 0xFFFFFFFF
+NUMAIN_ENTRY = "NuMain"  # a name `absent` may hold besides the toml entries
+_DISP_MASK_MIN = 0x1000  # a 4-byte displacement at least this large is an address, not a frame offset
+_CALLER_SAVED = ("eax", "ecx", "edx")
+_REG_FAMILY = {
+    "eax": {"eax", "ax", "al", "ah"}, "ecx": {"ecx", "cx", "cl", "ch"},
+    "edx": {"edx", "dx", "dl", "dh"}, "ebx": {"ebx", "bx", "bl", "bh"},
+    "esi": {"esi", "si"}, "edi": {"edi", "di"}, "ebp": {"ebp", "bp"},
+}
 _ENTRY_START = re.compile(r"^\[\[", re.MULTILINE)
 
 
@@ -45,6 +53,7 @@ class Rule(StrEnum):
     PINNED = "pinned"
     UNIQUE = "unique"
     AFTER = "after"
+    NEXT = "next"
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,7 @@ class FunctionEntry:
     role: Role
     ref: int
     after: str | None = None
+    next: str | None = None
     sig: str | None = None
 
 
@@ -60,10 +70,9 @@ class FunctionEntry:
 class DataEntry:
     name: str
     ref: int
-    func: str | None = None
-    offset: int | None = None
-    base: int | None = None
+    func: str
     insn: str | None = None
+    nth: int | None = None
     section: str | None = None
 
 
@@ -132,23 +141,46 @@ def function_bytes(img: Image, va: int) -> bytes:
     return img.data[off:off + (end - va)]
 
 
+def _disassembler() -> Any:
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    md.detail = True
+    return md
+
+
+def _variable_fields(insn: Any, lo: int, hi: int) -> list[tuple[int, int]]:
+    """(offset, size) of the bytes of `insn` that differ between builds: rel32 of call/jmp/jcc,
+    large memory displacements and 4-byte immediates that point into the image."""
+    fields: list[tuple[int, int]] = []
+    if insn.imm_size == 4:
+        imm = next(op.imm for op in insn.operands if op.type == x86.X86_OP_IMM)
+        if insn.group(capstone.CS_GRP_JUMP) or insn.group(capstone.CS_GRP_CALL) or lo <= imm & _ADDR_MASK < hi:
+            fields.append((insn.imm_offset, 4))
+    if insn.disp_size == 4:
+        disp = next(op.mem.disp for op in insn.operands if op.type == x86.X86_OP_MEM)
+        if abs(disp) >= _DISP_MASK_MIN:
+            fields.append((insn.disp_offset, 4))
+    return fields
+
+
 def _mask(code: bytes, va: int, lo: int, hi: int) -> list[int | None]:
-    pat: list[int | None] = list(code)
-    i = 0
-    while i + 4 <= len(code):
-        v = int.from_bytes(code[i:i + 4], "little")
-        rel = (va + i + 4 + v) & _ADDR_MASK  # rel32 target if this were a call/jmp operand
-        if lo <= v < hi or (i > 0 and code[i - 1] in _CALL_OPCODES and lo <= rel < hi):
-            pat[i:i + 4] = [None] * 4
-            i += 4
-        else:
-            i += 1
+    """Whole instructions up to SIG_BYTES (the instruction that crosses it is kept whole);
+    bytes after an undecodable point stay literal."""
+    pat: list[int | None] = []
+    for insn in _disassembler().disasm(code, va):
+        if len(pat) >= SIG_BYTES:
+            break
+        raw: list[int | None] = list(insn.bytes)
+        for off, size in _variable_fields(insn, lo, hi):
+            raw[off:off + size] = [None] * size
+        pat += raw
+    if len(pat) < min(SIG_BYTES, len(code)):
+        pat += list(code[len(pat):SIG_BYTES])
     return pat
 
 
 def signature(img: Image, va: int) -> str:
-    code = function_bytes(img, va)[:SIG_BYTES]
-    return " ".join("??" if b is None else f"{b:02x}" for b in _mask(code, va, img.lo, img.hi))
+    pat = _mask(function_bytes(img, va), va, img.lo, img.hi)
+    return " ".join("??" if b is None else f"{b:02x}" for b in pat)
 
 
 def find_matches(img: Image, sig: str) -> list[int]:
@@ -164,16 +196,26 @@ def find_matches(img: Image, sig: str) -> list[int]:
     return hits
 
 
-def resolve(img: Image, fe: Frontend, pins: dict[str, int]) -> dict[str, Resolved]:
-    """Find every function of `fe` in `img`: pin, else unique signature match, else `after` rule."""
+def validate_absent(fe: Frontend, absent: frozenset[str]) -> None:
+    known = {f.name for f in fe.functions} | {d.name for d in fe.data} | {NUMAIN_ENTRY}
+    for name in sorted(absent - known):
+        raise FeralError(f"absent names unknown entry {name}")
+
+
+def resolve(
+    img: Image, fe: Frontend, pins: dict[str, int], absent: frozenset[str] = frozenset()
+) -> dict[str, Resolved]:
+    """Find every function of `fe` in `img` that is not absent: pin, else unique signature match,
+    else `after` rule (2+ matches), else `next` rule."""
     known = {f.name for f in fe.functions}
     for name in pins:
         if name not in known:
             raise FeralError(f"pin for unknown function {name}")
     resolved: dict[str, Resolved] = {}
-    candidates: dict[str, list[int]] = {}
-    pending: list[FunctionEntry] = []
+    pending: list[tuple[FunctionEntry, Rule, str, list[int]]] = []
     for f in fe.functions:
+        if f.name in absent:
+            continue
         if f.name in pins:
             resolved[f.name] = Resolved(pins[f.name], Rule.PINNED, 0)
             continue
@@ -183,130 +225,158 @@ def resolve(img: Image, fe: Frontend, pins: dict[str, int]) -> dict[str, Resolve
         if len(hits) == 1:
             resolved[f.name] = Resolved(hits[0], Rule.UNIQUE, 1)
         elif len(hits) >= 2 and f.after is not None:
-            if f.after not in known:
-                raise FeralError(f"{f.name}: 'after' names unknown function {f.after}")
-            candidates[f.name] = hits
-            pending.append(f)
+            pending.append((f, Rule.AFTER, f.after, hits))
+        elif f.next is not None:
+            pending.append((f, Rule.NEXT, f.next, hits))
         else:
             raise FeralError(
-                f"{f.name}: signature matches {len(hits)} functions and no 'after' rule resolves it"
+                f"{f.name}: signature matches {len(hits)} functions and no 'after' or 'next' rule resolves it"
             )
+    for f, rule, anchor_name, _hits in pending:
+        if anchor_name not in known:
+            raise FeralError(f"{f.name}: '{rule}' names unknown function {anchor_name}")
     while pending:
         progress = False
-        for f in list(pending):
-            anchor = resolved.get(cast(str, f.after))
+        for item in list(pending):
+            f, rule, anchor_name, hits = item
+            anchor = resolved.get(anchor_name)
             if anchor is None:
                 continue
-            hits = candidates[f.name]
-            pick = next((c for c in hits if c > anchor.va), None)
+            if rule is Rule.AFTER:
+                pick = next((c for c in hits if c > anchor.va), None)
+            else:
+                k = bisect_right(img.starts, anchor.va)
+                pick = img.starts[k] if k < len(img.starts) else None
+                if pick is not None and hits and pick not in hits:
+                    raise FeralError(
+                        f"{f.name}: rule 'next {anchor_name}' picks 0x{pick:08X}, "
+                        f"which is not one of the {len(hits)} signature matches"
+                    )
             if pick is None:
                 raise FeralError(
-                    f"{f.name}: rule 'after {f.after}' found none of {len(hits)} matches above 0x{anchor.va:08X}"
+                    f"{f.name}: rule '{rule} {anchor_name}' found no function above 0x{anchor.va:08X}"
                 )
-            resolved[f.name] = Resolved(pick, Rule.AFTER, len(hits))
-            pending.remove(f)
+            resolved[f.name] = Resolved(pick, rule, len(hits))
+            pending.remove(item)
             progress = True
         if not progress:
-            names = ", ".join(f.name for f in pending)
-            raise FeralError(f"'after' rules cannot be resolved (cycle or unresolved anchor): {names}")
+            names = ", ".join(item[0].name for item in pending)
+            raise FeralError(f"'after'/'next' rules cannot be resolved (cycle or unresolved anchor): {names}")
     owner: dict[int, str] = {}
     for f in fe.functions:
+        if f.name in absent:
+            continue
         va = resolved[f.name].va
         if va in owner:
             raise FeralError(f"{owner[va]} and {f.name} both resolve to 0x{va:08X}")
         owner[va] = f.name
-    return {f.name: resolved[f.name] for f in fe.functions}
+    return {f.name: resolved[f.name] for f in fe.functions if f.name not in absent}
 
 
 @dataclass(frozen=True)
-class Decoded:
-    insns: list[Any]  # capstone CsInsn
-    pic_bases: list[int]
+class PicOperand:
+    """An instruction with one based memory operand whose base register holds a PIC base."""
+    insn: Any  # capstone CsInsn
+    disp: int
+    base: int  # the PIC base (address after `call $+5`) that the base register holds
 
 
-def _decode(img: Image, va: int) -> Decoded:
-    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
-    md.detail = True
-    insns = list(md.disasm(function_bytes(img, va), va))
-    bases = [
-        i.address + 5
-        for i, j in zip(insns, insns[1:])
-        if bytes(i.bytes) == CALL_NEXT and j.mnemonic == "pop"
-    ]
-    return Decoded(insns, bases)
+def _written(insn: Any) -> set[str]:
+    names = {cast(str, insn.reg_name(r)) for r in insn.regs_access()[1]}
+    if insn.group(capstone.CS_GRP_CALL):
+        names |= set(_CALLER_SAVED)
+    return names
 
 
-def _mem_operands(insn: Any) -> list[Any]:
-    return [
-        op for op in insn.operands if op.type == x86.X86_OP_MEM and op.mem.base != 0
-    ]
+def _pic_operands(img: Image, va: int) -> list[PicOperand]:
+    return _track_pic(list(_disassembler().disasm(function_bytes(img, va), va)))
 
 
-def _find_anchor(
-    cache: dict[str, Decoded], fe: Frontend, ref: int
-) -> tuple[FunctionEntry, int, int, str] | None:
-    """Smallest-offset (function, offset, base, mnemonic) with PIC base + disp == ref."""
-    best: tuple[FunctionEntry, int, int, str] | None = None
-    for f in fe.functions:
-        dec = cache[f.name]
-        for insn in dec.insns:
-            offset = insn.address - f.ref
-            if best is not None and offset >= best[1]:
-                break
-            hit = next(
-                (
-                    base
-                    for op in _mem_operands(insn)
-                    for base in dec.pic_bases
-                    if base <= insn.address and (base + op.mem.disp) & _ADDR_MASK == ref
-                ),
-                None,
-            )
-            if hit is not None:
-                best = (f, offset, hit - f.ref, str(insn.mnemonic))
-                break
-    return best
+def _track_pic(insns: list[Any]) -> list[PicOperand]:
+    """Instructions with exactly one based memory operand whose base register holds a PIC base, in
+    address order. A register holds a PIC base from `call $+5; pop reg` until it is written, and
+    through `mov` copies and `[ebp+disp]` spills; a spill slot holds it until it is written."""
+    held: dict[str, int] = {}  # register -> PIC base it holds
+    slots: dict[int, int] = {}  # [ebp+disp] -> PIC base it holds
+    found: list[PicOperand] = []
+    for k, insn in enumerate(insns):
+        name = insn.reg_name
+        based = [op for op in insn.operands if op.type == x86.X86_OP_MEM and op.mem.base != 0]
+        pic = [op for op in based if name(op.mem.base) in held]
+        if len(pic) == 1:
+            found.append(PicOperand(insn, pic[0].mem.disp, held[name(pic[0].mem.base)]))
+        if bytes(insn.bytes) == CALL_NEXT:
+            continue  # the PIC base idiom clobbers nothing
+        if insn.mnemonic == "pop" and k > 0 and bytes(insns[k - 1].bytes) == CALL_NEXT:
+            held[name(insn.operands[0].reg)] = insns[k - 1].address + 5
+            continue
+        received: int | None = None  # PIC base that the destination register of a `mov` receives
+        stored: tuple[int, int] | None = None  # (slot, PIC base) written by `mov [ebp+disp], reg`
+        if insn.mnemonic == "mov" and len(insn.operands) == 2:
+            dst, src = insn.operands
+            if dst.type == x86.X86_OP_REG and src.type == x86.X86_OP_REG:
+                received = held.get(name(src.reg))
+            elif dst.type == x86.X86_OP_REG and src.type == x86.X86_OP_MEM and name(src.mem.base) == "ebp":
+                received = slots.get(src.mem.disp)
+            elif dst.type == x86.X86_OP_MEM and src.type == x86.X86_OP_REG and name(dst.mem.base) == "ebp":
+                if name(src.reg) in held:
+                    stored = (dst.mem.disp, held[name(src.reg)])
+        for op in insn.operands:
+            if op.type == x86.X86_OP_MEM and name(op.mem.base) == "ebp" and op.access & capstone.CS_AC_WRITE:
+                slots.pop(op.mem.disp, None)
+        if stored is not None:
+            slots[stored[0]] = stored[1]
+        written = _written(insn)
+        for r in [r for r in held if _REG_FAMILY.get(r, {r}) & written]:
+            del held[r]
+        if received is not None:
+            held[name(insn.operands[0].reg)] = received
+    return found
 
 
 def refresh(fe: Frontend, img: Image) -> Frontend:
-    """Fill sig (functions) and func/offset/base/insn/section (data) from the reference binary."""
+    """Fill sig (functions) and insn/nth/section (data) from the reference binary."""
     functions = tuple(replace(f, sig=signature(img, f.ref)) for f in fe.functions)
-    cache = {f.name: _decode(img, f.ref) for f in fe.functions}
+    refs = {f.name: f.ref for f in fe.functions}
+    cache: dict[str, list[PicOperand]] = {}
     data: list[DataEntry] = []
     for d in fe.data:
-        found = _find_anchor(cache, fe, d.ref)
-        if found is None:
-            raise FeralError(f"{d.name}: no PIC base + displacement equals 0x{d.ref:08X}")
+        if d.func not in refs:
+            raise FeralError(f"{d.name}: anchor function {d.func} is not in the toml")
+        if d.func not in cache:
+            cache[d.func] = _pic_operands(img, refs[d.func])
+        ops = cache[d.func]
+        hit = next((o for o in ops if (o.base + o.disp) & _ADDR_MASK == d.ref), None)
+        if hit is None:
+            raise FeralError(f"{d.name}: no PIC-based operand in {d.func} equals 0x{d.ref:08X}")
         section = section_of(img, d.ref)
         if section is None:
             raise FeralError(f"{d.name}: 0x{d.ref:08X} is in no section")
-        func, offset, base, mnemonic = found
-        data.append(DataEntry(d.name, d.ref, func.name, offset, base, mnemonic, section))
+        mnemonic = str(hit.insn.mnemonic)
+        nth = [o for o in ops if o.insn.mnemonic == mnemonic].index(hit)
+        data.append(DataEntry(d.name, d.ref, d.func, mnemonic, nth, section))
     return Frontend(fe.header, functions, tuple(data))
 
 
-def derive_data(img: Image, fe: Frontend, resolved: dict[str, Resolved]) -> dict[str, int]:
-    """Find every data address of `fe` in `img` using the anchors written by refresh."""
-    cache: dict[str, Decoded] = {}
+def derive_data(
+    img: Image, fe: Frontend, resolved: dict[str, Resolved], absent: frozenset[str] = frozenset()
+) -> dict[str, int]:
+    """Find every data address of `fe` in `img` that is not absent, using the anchors written by refresh."""
+    cache: dict[str, list[PicOperand]] = {}
     values: dict[str, int] = {}
     for d in fe.data:
-        if d.func is None or d.offset is None or d.base is None or d.insn is None or d.section is None:
+        if d.name in absent:
+            continue
+        if d.insn is None or d.nth is None or d.section is None:
             raise FeralError(f"{d.name}: no anchor in the toml (run refresh)")
         if d.func not in resolved:
-            raise FeralError(f"{d.name}: anchor function {d.func} is not in the toml")
-        va = resolved[d.func].va
+            raise FeralError(f"{d.name}: anchor function {d.func} is not resolved")
         if d.func not in cache:
-            cache[d.func] = _decode(img, va)
-        dec = cache[d.func]
-        if va + d.base not in dec.pic_bases:
-            raise FeralError(f"{d.name}: no PIC base (call $+5; pop) at {d.func}+0x{d.base:X}")
-        insn = next((i for i in dec.insns if i.address == va + d.offset), None)
-        if insn is None or insn.mnemonic != d.insn:
-            raise FeralError(f"{d.name}: no '{d.insn}' instruction at {d.func}+0x{d.offset:X}")
-        mems = _mem_operands(insn)
-        if len(mems) != 1:
-            raise FeralError(f"{d.name}: instruction at {d.func}+0x{d.offset:X} has {len(mems)} based memory operands")
-        value = (va + d.base + mems[0].mem.disp) & _ADDR_MASK
+            cache[d.func] = _pic_operands(img, resolved[d.func].va)
+        same = [o for o in cache[d.func] if o.insn.mnemonic == d.insn]
+        if d.nth >= len(same):
+            raise FeralError(f"{d.name}: {d.func} has no operand #{d.nth} of '{d.insn}' on a PIC base")
+        value = (same[d.nth].base + same[d.nth].disp) & _ADDR_MASK
         section = next((sec for full, sec in img.sections if full == d.section), None)
         if section is None or not section.addr <= value < section.addr + section.size:
             raise FeralError(f"{d.name}: 0x{value:08X} is not inside section {d.section}")
@@ -322,15 +392,14 @@ def load_file(path: str | Path) -> Frontend:
     functions: list[FunctionEntry] = []
     for item in cast(list[dict[str, Any]], raw.get("function", [])):
         functions.append(
-            FunctionEntry(item["name"], Role(item["role"]), item["ref"], item.get("after"), item.get("sig"))
+            FunctionEntry(
+                item["name"], Role(item["role"]), item["ref"], item.get("after"), item.get("next"), item.get("sig")
+            )
         )
     data: list[DataEntry] = []
     for item in cast(list[dict[str, Any]], raw.get("data", [])):
         data.append(
-            DataEntry(
-                item["name"], item["ref"], item.get("func"), item.get("offset"), item.get("base"),
-                item.get("insn"), item.get("section"),
-            )
+            DataEntry(item["name"], item["ref"], item["func"], item.get("insn"), item.get("nth"), item.get("section"))
         )
     return Frontend(header, tuple(functions), tuple(data))
 
@@ -341,19 +410,17 @@ def render(fe: Frontend) -> str:
         lines = ["[[function]]", f'name = "{f.name}"', f'role = "{f.role}"', f"ref = 0x{f.ref:08X}"]
         if f.after is not None:
             lines.append(f'after = "{f.after}"')
+        if f.next is not None:
+            lines.append(f'next = "{f.next}"')
         if f.sig is not None:
             lines.append(f'sig = "{f.sig}"')
         blocks.append("\n".join(lines))
     for d in fe.data:
-        lines = ["[[data]]", f'name = "{d.name}"', f"ref = 0x{d.ref:08X}"]
-        if d.func is not None:
-            lines.append(f'func = "{d.func}"')
-        if d.offset is not None:
-            lines.append(f"offset = 0x{d.offset:X}")
-        if d.base is not None:
-            lines.append(f"base = 0x{d.base:X}")
+        lines = ["[[data]]", f'name = "{d.name}"', f"ref = 0x{d.ref:08X}", f'func = "{d.func}"']
         if d.insn is not None:
             lines.append(f'insn = "{d.insn}"')
+        if d.nth is not None:
+            lines.append(f"nth = {d.nth}")
         if d.section is not None:
             lines.append(f'section = "{d.section}"')
         blocks.append("\n".join(lines))

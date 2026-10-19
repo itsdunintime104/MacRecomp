@@ -101,6 +101,11 @@ SSE2_CASES = [
     Case("cvtps2pd_mem",
          f"mov dword ptr [{D}+0x20], 0x40490fdb\nmov dword ptr [{D}+0x24], 0xc0a00000\n"
          f"cvtps2pd xmm3, qword ptr [{D}+0x20]\nret"),
+    Case("cvtdq2pd", "cvtdq2pd xmm0, xmm1\ncvtdq2pd xmm2, xmm3\nret",
+         xmm={1: (0x80000000, 0x7FFFFFFF, 5, 6), 3: (0xFFFFFFFF, 12345, 7, 8)}),
+    Case("cvtdq2pd_mem",
+         f"mov dword ptr [{D}+0x20], 0xfffffff0\nmov dword ptr [{D}+0x24], 0x7fffffff\n"
+         f"cvtdq2pd xmm3, qword ptr [{D}+0x20]\nret"),
     Case("addpd_mem",
          f"mov dword ptr [{D}+0x40], 0\nmov dword ptr [{D}+0x44], 0x3ff80000\n"
          f"mov dword ptr [{D}+0x48], 0\nmov dword ptr [{D}+0x4c], 0xc0040000\n"

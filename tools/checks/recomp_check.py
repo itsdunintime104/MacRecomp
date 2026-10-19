@@ -28,6 +28,9 @@ LABEL_RE = re.compile(r"^\s*(loc_[0-9A-F]+): ;")
 GOTO_RE = re.compile(r"goto (loc_[0-9A-F]+);")
 COMMENT_RE = re.compile(r"/\*.*?\*/")
 NO_EFFECT_TEXT = "(void)0;"
+NORETURN_CALL_RE = re.compile(r"RECOMP_ABI_CALL\([^,]+,\s*(\w+)\)")
+# Imports that never return: a call to one ends the path.
+NORETURN_IMPORTS = frozenset(("imp____stack_chk_fail", "imp__exit", "imp___exit", "imp___Unwind_Resume"))
 TRAP_MNEMONICS = frozenset(("ud2", "hlt"))
 NAN_GROUP_PREFIX = "nan:"
 MAX_LISTED = 10
@@ -92,7 +95,10 @@ def _code(line: str) -> str:
 
 def _ends_block(line: str) -> bool:
     code = _code(line).strip()
-    return code.startswith("goto loc_") or (code.endswith("return;") and not code.startswith("if "))
+    if code.startswith("goto loc_") or (code.endswith("return;") and not code.startswith("if ")):
+        return True
+    call = NORETURN_CALL_RE.search(code)
+    return call is not None and not code.startswith("if ") and call.group(1) in NORETURN_IMPORTS
 
 
 def _reached_lines(body: list[str]) -> set[int]:

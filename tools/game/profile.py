@@ -22,7 +22,7 @@ _TOP_STR = (
     "id", "title", "window_title", "steam_build", "steam_app", "game_exe",
     "binary_sha256", "binary", "analysis", "switch_tables", "import_sigs", "env_prefix",
 )
-_TOP_KEYS = frozenset((*_TOP_STR, "steam_app_id", "app", "pins"))
+_TOP_KEYS = frozenset((*_TOP_STR, "steam_app_id", "app", "pins", "absent"))
 _APP_REQUIRED = ("name", "exe", "bundle_id", "support_dir")
 _APP_KEYS = frozenset((*_APP_REQUIRED, "old_name"))
 
@@ -49,6 +49,7 @@ class Profile:
     support_dir: str
     old_app_name: str | None
     pins: dict[str, int] = field(default_factory=lambda: {})
+    absent: tuple[str, ...] = ()
 
 
 def _str(table: dict[str, Any], key: str, where: str) -> str:
@@ -103,6 +104,11 @@ def load(path: str | Path) -> Profile:
             raise ValueError(f"{where} [pins]: key '{name}' must be an integer address")
         pins[name] = va
 
+    absent_raw = raw.get("absent", [])
+    if not isinstance(absent_raw, list) or not all(isinstance(n, str) for n in cast(list[Any], absent_raw)):
+        raise ValueError(f"{where}: key 'absent' must be a list of names")
+    absent = tuple(cast(list[str], absent_raw))
+
     root = path.parent
     return Profile(
         root=root,
@@ -125,6 +131,7 @@ def load(path: str | Path) -> Profile:
         support_dir=app_vals["support_dir"],
         old_app_name=old_name,
         pins=pins,
+        absent=absent,
     )
 
 

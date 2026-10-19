@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 from collections import defaultdict
 from typing import Any
 
@@ -87,4 +88,61 @@ def test_report_zero_goal_counts(sweep: Sweep, capsys: Any) -> None:
             f"other={len(switch['other'])} explained={len(switch['explained'])} "
             f"decode_failures_outside_tables={stats['decode_failures_outside_tables']}"
         )
+
+
+# Synthetic PIC switches: the base comes from `call +0; pop ebx` at 0x1000.
+FUNC = (0x1000, 0x1200)
+BASE = 0x1005
+TABLE = 0x1100
+ENTRIES = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90]
+
+
+def _resolve(lines: list[tuple[str, str]], count: int) -> dict[str, Any] | None:
+    insns = [disasm.Insn(0x1000, 5, "call", "0x1005"), disasm.Insn(0x1005, 1, "pop", "ebx")]
+    insns += [disasm.Insn(0x1006 + 3 * n, 3, mnem, ops) for n, (mnem, ops) in enumerate(lines)]
+    data = bytearray(0x200)
+    for k, entry in enumerate(ENTRIES[:count]):
+        data[TABLE - 0x1000 + 4 * k : TABLE - 0x1000 + 4 * k + 4] = struct.pack("<i", entry)
+    amap = disasm.AddressMap(
+        {"segments": [{"vmaddr": 0x1000, "fileoff": 0, "filesize": 0x200, "sections": []}]}
+    )
+    states = disasm._pic_bases(insns)
+    return disasm._match_switch(insns, len(insns) - 1, states, {}, FUNC, amap, bytes(data))
+
+
+def test_pic_switch_with_spilled_base_slot() -> None:
+    switch = _resolve(
+        [
+            ("mov", "dword ptr [ebp - 8], ebx"),
+            ("cmp", "eax, 3"),
+            ("ja", "0x1180"),
+            ("mov", "ecx, dword ptr [ebp - 8]"),
+            ("mov", f"edx, dword ptr [ecx + eax*4 + {TABLE - BASE:#x}]"),
+            ("add", "edx, dword ptr [ebp - 8]"),
+            ("jmp", "edx"),
+        ],
+        4,
+    )
+    assert switch is not None
+    assert (switch["pic_base"], switch["table_addr"], switch["count"]) == (BASE, TABLE, 4)
+    assert switch["targets"] == [BASE + e for e in ENTRIES[:4]]
+
+
+def test_pic_switch_with_shifted_index_and_lea_table() -> None:
+    switch = _resolve(
+        [
+            ("cmp", "dword ptr [ebp - 0x1c], 8"),
+            ("ja", "0x1180"),
+            ("mov", "edx, dword ptr [ebp - 0x1c]"),
+            ("shl", "edx, 2"),
+            ("lea", f"eax, [ebx + {TABLE - BASE:#x}]"),
+            ("mov", "eax, dword ptr [edx + eax]"),
+            ("add", "eax, ebx"),
+            ("jmp", "eax"),
+        ],
+        9,
+    )
+    assert switch is not None
+    assert (switch["pic_base"], switch["table_addr"], switch["count"]) == (BASE, TABLE, 9)
+    assert switch["targets"] == [BASE + e for e in ENTRIES]
 

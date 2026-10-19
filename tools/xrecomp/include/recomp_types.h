@@ -1013,6 +1013,14 @@ static inline RecompXmm XMM_CVT_PS2PD(RecompXmm a) {
     return r;
 }
 
+/** cvtdq2pd: the two low signed dwords converted to doubles (exact). */
+static inline RecompXmm XMM_CVT_DQ2PD(RecompXmm a) {
+    RecompXmm r;
+    double d0 = (double)a.i[0], d1 = (double)a.i[1];
+    r.d[0] = d0; r.d[1] = d1;
+    return r;
+}
+
 /** addpd: two doubles added lane-wise. */
 static inline RecompXmm XMM_ADDPD(RecompXmm a, RecompXmm b) {
     RecompXmm r;
