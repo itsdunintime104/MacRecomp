@@ -1,6 +1,6 @@
 /* Usage:
  *   test_loader <bin>                      load and self-check
- *   test_loader <bin> [--dump A N | --probe A | --header OFF N]...
+ *   test_loader <bin> [--dump A N | --probe A | --in-image A | --header OFF N]...
  * Addresses are hex. Each option prints one line. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,6 +56,9 @@ int main(int argc, char **argv)
                 printf("%02x\n", b);
             else
                 printf("fault\n");
+            i += 2;
+        } else if (strcmp(argv[i], "--in-image") == 0 && i + 1 < argc) {
+            printf("%d\n", guest_addr_in_image(parse_u32(argv[i + 1])));
             i += 2;
         } else if (strcmp(argv[i], "--header") == 0 && i + 2 < argc) {
             uint32_t off = parse_u32(argv[i + 1]);

@@ -29,6 +29,9 @@ int guest_mem_init(void);
  * Returns 0 on success. Requires guest_mem_init(). */
 int guest_load_image(const char *path);
 
+/* 1 if a lies in a segment guest_load_image maps (not __PAGEZERO or __LINKEDIT). */
+int guest_addr_in_image(uint32_t a);
+
 /* Print n bytes at guest address a as hex, then a newline. */
 void guest_mem_dump(uint32_t a, uint32_t n);
 

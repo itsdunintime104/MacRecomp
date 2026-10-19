@@ -668,6 +668,22 @@ static int make_context(void)
     return CGLSetCurrentContext(ctx) == kCGLNoError ? 0 : -1;
 }
 
+/* Program names come from a pool; 200 one-name calls span several refills. */
+static void test_program_name_pool(void)
+{
+    enum { CALLS = 200 };
+    uint32_t seen[CALLS];
+    for (int i = 0; i < CALLS; i++) {
+        uint32_t args[2] = {1, SCRATCH + 0x2000};
+        MEM32(SCRATCH + 0x2000) = 0;
+        call(gl("glGenProgramsARB"), 2, args);
+        seen[i] = MEM32(SCRATCH + 0x2000);
+        CHECK(seen[i] != 0, "glGenProgramsARB call %d gave 0", i);
+        for (int j = 0; j < i; j++)
+            CHECK(seen[j] != seen[i], "program name %u repeated at calls %d and %d", seen[i], j, i);
+    }
+}
+
 int main(void)
 {
     if (guest_mem_init() != 0)
@@ -692,6 +708,7 @@ int main(void)
     test_map_mirror();
     test_flush_mapped_range();
     test_shader_objects();
+    test_program_name_pool();
     if (g_failures != 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

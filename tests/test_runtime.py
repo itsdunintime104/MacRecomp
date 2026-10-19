@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,12 @@ def _sections(analysis: dict[str, Any]) -> list[tuple[str, str, int, int, int]]:
         for sec in seg["sections"]:
             result.append((seg["name"], sec["name"], sec["addr"], sec["size"], sec["offset"]))
     return result
+
+
+def _gen_segments() -> list[tuple[str, int, int]]:
+    """Return (name, vmaddr, vmsize) for each row of the generated segment table."""
+    rows = re.findall(r'\{"(\w+)", (0x[0-9a-f]+), (0x[0-9a-f]+),', GEN_SEGMENTS.read_text())
+    return [(name, int(vmaddr, 16), int(vmsize, 16)) for name, vmaddr, vmsize in rows]
 
 
 def _run_loader(binary: Path, *args: str) -> list[str]:
@@ -124,6 +131,16 @@ def test_low_pages_fault(loader_built: Path) -> None:
     )
     assert lines == ["fault"] * 4
     assert _run_loader(loader_built, "--probe", "4000") != ["fault"]
+
+
+def test_addr_in_image(loader_built: Path) -> None:
+    segments = {name: (vmaddr, vmsize) for name, vmaddr, vmsize in _gen_segments()}
+    text_addr, text_size = segments["__TEXT"]
+    link_addr, link_size = segments["__LINKEDIT"]
+    last_end = max(addr + size for addr, size in segments.values())
+    probes = [text_addr + text_size // 2, 0, link_addr + link_size // 2, last_end]
+    args = [arg for p in probes for arg in ("--in-image", f"{p:x}")]
+    assert _run_loader(loader_built, *args) == ["1", "0", "0", "0"]
 
 
 def test_header_side_buffer(loader_built: Path, binary_data: bytes) -> None:
