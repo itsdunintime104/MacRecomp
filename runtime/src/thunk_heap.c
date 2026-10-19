@@ -1,6 +1,6 @@
-/* Heap thunks: malloc, free, strdup and the C++ operator new/delete. Only
- * the imports listed in recon/import_sigs.json are provided (calloc,
- * realloc, valloc and malloc_size are not imported by the game). */
+/* Heap thunks: malloc, calloc, realloc, free, strdup and the C++ operator
+ * new/delete. Only imports that a game uses are provided (valloc and
+ * malloc_size are not imported by any game so far). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +15,22 @@ void imp__malloc(void)
 {
     g_heap_site = MEM32(g_esp);
     g_eax = guest_malloc(ARG(0));
+    g_heap_site = 0;
+    g_esp += 4;
+}
+
+void imp__calloc(void)
+{
+    g_heap_site = MEM32(g_esp);
+    g_eax = guest_calloc(ARG(0), ARG(1));
+    g_heap_site = 0;
+    g_esp += 4;
+}
+
+void imp__realloc(void)
+{
+    g_heap_site = MEM32(g_esp);
+    g_eax = guest_realloc(ARG(0), ARG(1));
     g_heap_site = 0;
     g_esp += 4;
 }

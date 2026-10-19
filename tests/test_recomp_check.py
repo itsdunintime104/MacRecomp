@@ -63,6 +63,13 @@ def test_unreachable_unset_flag_read_passes(tmp_path: Path) -> None:
                   "loc_00001010: ;\n    return;\nloc_00001020: ;\n    return;\n")
 
 
+def test_unset_flag_read_after_noreturn_call_passes(tmp_path: Path) -> None:
+    assert not _flag_read_failures(
+        tmp_path, "    PUSH32(esp, 0x1005u); RECOMP_ABI_CALL(0x0101388Cu, imp____stack_chk_fail); /* call 0x0101388C */\n"
+                  "    if (_flags /* jne: not equal / not zero */) goto loc_00001010;\n"
+                  "    return;\nloc_00001010: ;\n    return;\n")
+
+
 def test_unset_flag_read_without_effect_passes(tmp_path: Path) -> None:
     assert not _flag_read_failures(
         tmp_path, "    if (_flags /* jo: overflow */) (void)0; "

@@ -17,6 +17,8 @@
 void imp__malloc(void);
 void imp__free(void);
 void imp__strdup(void);
+void imp__calloc(void);
+void imp__realloc(void);
 void imp___Znwm(void);
 void imp___Znam(void);
 void imp___ZdlPv(void);
@@ -128,6 +130,19 @@ static uint32_t call_thunk(void (*fn)(void), uint32_t arg)
     return g_eax;
 }
 
+/* Same as call_thunk with two arguments. */
+static uint32_t call_thunk2(void (*fn)(void), uint32_t a0, uint32_t a1)
+{
+    uint32_t sp = STACK_HI - 64;
+    MEM32(sp + 4) = a0;
+    MEM32(sp + 8) = a1;
+    MEM32(sp) = 0xDEADBEEF;
+    g_esp = sp;
+    fn();
+    check(g_esp == sp + 4, "esp advanced by 4");
+    return g_eax;
+}
+
 static void test_thunks(void)
 {
     uint32_t p = call_thunk(imp__malloc, 100);
@@ -146,6 +161,18 @@ static void test_thunks(void)
     check(strcmp(guest_ptr(d), "hobbit") == 0, "strdup copy is independent");
     call_thunk(imp__free, d);
     guest_free(s);
+
+    uint32_t c = call_thunk2(imp__calloc, 25, 8);
+    check(c != 0, "imp__calloc");
+    check_block(c, 200);
+    for (int i = 0; i < 200; i++)
+        check(((uint8_t *)guest_ptr(c))[i] == 0, "calloc zeroes n*s bytes");
+    fill(c, 200, 7);
+    uint32_t r = call_thunk2(imp__realloc, c, 5000);
+    check(r != 0, "imp__realloc");
+    check_block(r, 5000);
+    verify(r, 200, 7);
+    call_thunk(imp__free, r);
 
     uint32_t n1 = call_thunk(imp___Znwm, 48);
     uint32_t n2 = call_thunk(imp___Znam, 64);

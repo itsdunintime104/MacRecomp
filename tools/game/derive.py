@@ -2,6 +2,9 @@
 
     python -m tools.game.derive --profile <game.toml> [--out DIR]
 
+Entries named in the profile's `absent` list (and the NuMain CFString) are skipped; feral_symbols.h says which are present
+with FE_HAS_<NAME> 1 or 0.
+
 Writes game_config.h, feral_symbols.h, frontend_rename.h, native_overrides.txt, gen_segments.h,
 game.mk and derived.json into DIR (default <game root>/build.nosync/game).
 """
@@ -37,6 +40,7 @@ class Derived:
     cfstr_numain: int
     functions: dict[str, Resolved]
     data: dict[str, int]
+    absent: frozenset[str]
 
 
 def static_base(img: Image) -> int:
@@ -70,13 +74,17 @@ def find_numain_cfstring(img: Image) -> int:
 
 
 def compute(prof: profile.Profile, fe: Frontend, img: Image) -> Derived:
-    functions = feral.resolve(img, fe, prof.pins)
+    absent = frozenset(prof.absent)
+    feral.validate_absent(fe, absent)
+    has_numain = feral.NUMAIN_ENTRY not in absent
+    functions = feral.resolve(img, fe, prof.pins, absent)
     return Derived(
         entry=img.parsed.entry,
         static_base=static_base(img),
-        cfstr_numain=find_numain_cfstring(img),
+        cfstr_numain=find_numain_cfstring(img) if has_numain else 0,
         functions=functions,
-        data=feral.derive_data(img, fe, functions),
+        data=feral.derive_data(img, fe, functions, absent),
+        absent=absent,
     )
 
 
@@ -114,7 +122,11 @@ def render_game_config(prof: profile.Profile, derived: Derived) -> str:
 
 
 def _by_role(fe: Frontend, derived: Derived, *roles: Role) -> list[tuple[str, int]]:
-    return [(f.name, derived.functions[f.name].va) for f in fe.functions if f.role in roles]
+    return [
+        (f.name, derived.functions[f.name].va)
+        for f in fe.functions
+        if f.role in roles and f.name in derived.functions
+    ]
 
 
 def _frontend_sorted(fe: Frontend, derived: Derived) -> list[tuple[str, int]]:
@@ -124,9 +136,18 @@ def _frontend_sorted(fe: Frontend, derived: Derived) -> list[tuple[str, int]]:
 def render_feral_symbols(prof: profile.Profile, fe: Frontend, derived: Derived) -> str:
     body = [f"#define {name} sub_{va:08X}" for name, va in _by_role(fe, derived, Role.FRONTEND, Role.PAD)]
     body.append("")
-    body += [f"#define {f.name.upper()}_VA 0x{derived.functions[f.name].va:08X}u" for f in fe.functions]
+    body += [
+        f"#define {f.name.upper()}_VA 0x{derived.functions[f.name].va:08X}u"
+        for f in fe.functions
+        if f.name in derived.functions
+    ]
     body.append("")
     body += [f"#define {name} 0x{va:08X}u" for name, va in derived.data.items()]
+    body.append("")
+    body += [
+        f"#define FE_HAS_{name.upper()} {0 if name in derived.absent else 1}"
+        for name in [*(f.name for f in fe.functions), *(d.name for d in fe.data)]
+    ]
     frontend = _frontend_sorted(fe, derived)
     if not frontend:
         raise FeralError("no frontend functions in feral_frontend.toml")

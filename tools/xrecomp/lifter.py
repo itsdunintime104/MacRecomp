@@ -541,7 +541,7 @@ _EFLAGS_PRESERVE = frozenset({
     "movdqa", "movdqu", "movlpd", "movhpd", "maskmovdqu",
     "pmuludq", "psubq", "pslldq", "psrldq",
     "xorpd", "andpd", "orpd", "andnpd",
-    "cvtdq2ps", "cvtps2pd", "cvtpd2ps",
+    "cvtdq2ps", "cvtdq2pd", "cvtps2pd", "cvtpd2ps",
     # SSE/MMX integer
     "movd", "movq", "movntq",
     "cvtps2pi", "cvttps2pi", "pinsrw", "pextrw",
@@ -1769,7 +1769,7 @@ class Lifter:
                  "movmskps",
                  "pand", "pandn", "por", "pxor", "pcmpgtd",
                  "pshufd", "pinsrw", "pextrw",
-                 "pslldq", "psrldq", "pmuludq", "cvtdq2ps",
+                 "pslldq", "psrldq", "pmuludq", "cvtdq2ps", "cvtdq2pd",
                  "pshuflw", "movlpd", "cvtps2pd", "addpd", "cvtpd2ps",
                  "packuswb", "packsswb", "packssdw")                 or m in _SSE_CMP_NAMED \
                 or m in _SSE2_INT_BINARY or m in _SSE2_SHIFT:
@@ -3849,6 +3849,14 @@ class Lifter:
                 b = _packed_read(ops[1])
             if b is not None:
                 return [f"{ops[0].reg} = XMM_CVT_PS2PD({b}); /* {m} */"]
+        if m == "cvtdq2pd" and nops >= 2 and _is_xmm(ops[0]):
+            # The memory form reads 8 bytes (two dwords), not 16.
+            if ops[1].type == "mem":
+                b = f"XMM_MOVQ_LOAD({_fmt_mem(ops[1])})"
+            else:
+                b = _packed_read(ops[1])
+            if b is not None:
+                return [f"{ops[0].reg} = XMM_CVT_DQ2PD({b}); /* {m} */"]
         if m == "cvtpd2ps" and nops >= 2 and _is_xmm(ops[0]):
             b = _packed_read(ops[1])
             if b is not None:
@@ -3858,7 +3866,7 @@ class Lifter:
             if lifted is not None:
                 return lifted
         if m in ("pinsrw", "pextrw", "pshufd", "pshuflw", "pslldq", "psrldq",
-                 "cvtdq2ps", "cvtps2pd", "cvtpd2ps", "addpd") \
+                 "cvtdq2ps", "cvtdq2pd", "cvtps2pd", "cvtpd2ps", "addpd") \
                 or m in _SSE2_SHIFT or m in _SSE2_INT_BINARY:
             return self._unimplemented(insn, m)
 

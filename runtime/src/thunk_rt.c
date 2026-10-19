@@ -257,6 +257,29 @@ void imp___ZNSt8ios_base4InitD1Ev(void)
     ret_void();
 }
 
+/* ---- Fortified copies: the host check aborts on overflow, as on the Mac.
+ * The guest passes 0xFFFFFFFF when the destination size is unknown. ---- */
+
+static size_t chk_dstlen(uint32_t n)
+{
+    return n == 0xFFFFFFFFu ? (size_t)-1 : (size_t)n;
+}
+
+void imp____memcpy_chk(void)
+{
+    uint32_t dst = arg32(0);
+    void *r = __builtin___memcpy_chk(guest_ptr(dst), guest_ptr(arg32(1)), arg32(2),
+                                     chk_dstlen(arg32(3)));
+    ret32(r ? (uint32_t)((uint8_t *)r - g_guest_base) : 0);
+}
+
+void imp____memset_chk(void)
+{
+    void *r = __builtin___memset_chk(guest_ptr(arg32(0)), (int)arg32(1), arg32(2),
+                                     chk_dstlen(arg32(3)));
+    ret32(r ? (uint32_t)((uint8_t *)r - g_guest_base) : 0);
+}
+
 /* ---- Steam API (Vapor dylib): the game runs offline without Steam ----
  * All entries are cdecl. Interface accessors return fake guest interface
  * objects (steam_fake.c): Steam running, user offline, cloud off, no DLC. */
@@ -284,6 +307,11 @@ void imp__SteamAPI_RunCallbacks(void)
 void imp__SteamAPI_UnregisterCallback(void)
 {
     ret32(0);
+}
+
+void imp__SteamAPI_Shutdown(void)
+{
+    ret_void();
 }
 
 void imp__SteamApps(void)

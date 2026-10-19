@@ -264,14 +264,18 @@ void fe_pool_drain(void) { RET(0); }
 /* One-time application setup (fe_app_init). */
 void fe_app_init(void)
 {
-    if (!(MEM8(G_INIT_ONCE) & 1)) {
+    static int s_init_done;
+    if (!s_init_done) {
         struct timeval tv;
         fe_sdl_init();
         memset(guest_ptr(G_KEYS), 0, 0x200);
         gettimeofday(&tv, NULL);
         MEM32(G_INIT_TIME) = (uint32_t)tv.tv_sec;
         MEM32(G_INIT_TIME + 4) = (uint32_t)tv.tv_usec;
+#if FE_HAS_G_INIT_ONCE
         MEM8(G_INIT_ONCE) = 1;
+#endif
+        s_init_done = 1;
     }
     RET(0);
 }
@@ -283,8 +287,12 @@ void fe_display_setup(void)
     int w, h;
     fe_render_size(&w, &h);
     MEM32(G_DISPLAY_ID) = FE_DISPLAY_ID;
+#if FE_HAS_G_DISPLAY_MODE
     MEM32(G_DISPLAY_MODE) = FE_MODE_TOKEN;
+#endif
+#if FE_HAS_G_RETINA
     MEM8(G_RETINA) = 0;
+#endif
     MEM32(G_SCREEN_W) = (uint32_t)w;
     MEM32(G_SCREEN_H) = (uint32_t)h;
     RET(0);

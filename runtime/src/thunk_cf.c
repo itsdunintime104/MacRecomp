@@ -908,6 +908,7 @@ static uint32_t register_callbacks(const char *name)
 void thunk_cf_data_init(void)
 {
     register_object("_kCFAllocatorDefault", kCFAllocatorDefault);
+    register_object("_kCFAllocatorSystemDefault", kCFAllocatorSystemDefault);
     register_object("_kCFLocaleCountryCode", kCFLocaleCountryCode);
     register_object("_kCFLocaleLanguageCode", kCFLocaleLanguageCode);
     register_object("_kCFRunLoopDefaultMode", kCFRunLoopDefaultMode);

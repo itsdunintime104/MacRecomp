@@ -35,6 +35,10 @@ REGS32 = frozenset({"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"})
 TABLE_LOAD_RE = re.compile(
     r"^(\w+), dword ptr \[(\w+) \+ (\w+)\*4(?: ([+-]) (0x[0-9a-f]+))?\]$"
 )
+# mov rT, dword ptr [rX + rY]: an unscaled load, the index already shifted
+UNSCALED_LOAD_RE = re.compile(r"^(\w+), dword ptr \[(\w+) \+ (\w+)\]$")
+# lea rX, [rP (+|-) disp]
+LEA_DISP_RE = re.compile(r"^(\w+), \[(\w+) ([+-]) (0x[0-9a-f]+)\]$")
 # 32-bit register that each sub-register belongs to
 SUBREG_FAMILY = {
     sub: full
@@ -70,6 +74,13 @@ class Insn(NamedTuple):
     size: int
     mnem: str
     ops: str
+
+
+class TableLoad(NamedTuple):
+    at: int  # index of the instruction that loads the table entry
+    base: int  # PIC base value the entries are relative to
+    index_reg: str  # register or operand that holds the entry number
+    disp: int  # signed table offset from the base
 
 
 class AddressMap:
@@ -185,13 +196,44 @@ def _pic_bases(insns: list[Insn]) -> list[dict[str, int]]:
     return states
 
 
+def _signed(sign: str | None, digits: str | None) -> int:
+    value = int(digits or "0", 16)
+    return -value if sign == "-" else value
+
+
+def _unscaled_load(
+    insns: list[Insn], m: int, states: list[dict[str, int]], r_t: str
+) -> tuple[int, str, int] | None:
+    """For `mov rT, [rX + rY]` at m: (PIC base, index register, disp), or None.
+
+    The load is a table read when one address register was last written by
+    `shl rI, 2` (the index) and the other by `lea rA, [rP +- d]` with rP a PIC base.
+    """
+    load = UNSCALED_LOAD_RE.match(insns[m].ops)
+    if load is None or load.group(1) != r_t:
+        return None
+    for r_i, r_a in ((load.group(2), load.group(3)), (load.group(3), load.group(2))):
+        k_i = _last_writer(insns, m, r_i)
+        k_a = _last_writer(insns, m, r_a)
+        if k_i is None or k_a is None:
+            continue
+        lea = LEA_DISP_RE.match(insns[k_a].ops) if insns[k_a].mnem == "lea" else None
+        if insns[k_i].mnem != "shl" or insns[k_i].ops != f"{r_i}, 2" or lea is None:
+            continue
+        base = states[k_a].get(lea.group(2))
+        if base is not None:
+            return base, r_i, _signed(lea.group(3), lea.group(4))
+    return None
+
+
 def _find_table_load(
     insns: list[Insn], j: int, states: list[dict[str, int]]
-) -> tuple[int, re.Match[str], str] | None:
-    """Locate the table load before `jmp rT`: (index, match, pic register).
+) -> TableLoad | None:
+    """Locate the table load before `jmp rT`.
 
-    Two shapes: `mov rT, [rP + rI*4 + d]` then `add rT, rP`, or the folded
-    `add rT, [rT + rI*4 + d]` where rT itself holds the PIC base.
+    Three shapes: `mov rT, [rP + rI*4 + d]` then `add rT, rP`; the folded
+    `add rT, [rT + rI*4 + d]` where rT itself holds the PIC base; and
+    `shl rI, 2`, `lea rA, [rP + d]`, `mov rT, [rI + rA]`, `add rT, rP`.
     """
     r_t = insns[j].ops
     lo = max(0, j - LOOKBACK)
@@ -201,16 +243,24 @@ def _find_table_load(
             continue
         folded = TABLE_LOAD_RE.match(insn.ops)
         if folded is not None and folded.group(2) == r_t:
-            return a, folded, r_t
-        r_p = insn.ops.split(", ")[1]
+            base = states[a].get(r_t)
+            if base is None:
+                return None
+            return TableLoad(a, base, folded.group(3), _signed(folded.group(4), folded.group(5)))
+        r_p = insn.ops.split(", ")[1].removeprefix("dword ptr ")
         for m in range(a - 1, lo - 1, -1):
-            load = TABLE_LOAD_RE.match(insns[m].ops) if insns[m].mnem == "mov" else None
-            if load is None or load.group(1) != r_t:
+            if insns[m].mnem != "mov":
                 continue
-            # the add operand may be a copy of the load's base register
-            base = states[m].get(load.group(2))
-            if base is not None and states[a].get(r_p) == base:
-                return m, load, load.group(2)
+            load = TABLE_LOAD_RE.match(insns[m].ops)
+            if load is not None and load.group(1) == r_t:
+                # the add operand may be a copy of the load's base register
+                base = states[m].get(load.group(2))
+                if base is not None and states[a].get(r_p) == base:
+                    return TableLoad(m, base, load.group(3), _signed(load.group(4), load.group(5)))
+                continue
+            unscaled = _unscaled_load(insns, m, states, r_t)
+            if unscaled is not None and states[a].get(r_p) == unscaled[0]:
+                return TableLoad(m, unscaled[0], unscaled[1], unscaled[2])
         return None
     return None
 
@@ -228,17 +278,11 @@ def _match_switch(
     found = _find_table_load(insns, j, states)
     if found is None:
         return None
-    m, load, r_p = found
-    base = states[m].get(r_p)
-    if base is None:
-        return None
-    count = _entry_count(insns, m, load.group(3), jumps_to)
+    base = found.base
+    count = _entry_count(insns, found.at, found.index_reg, jumps_to)
     if count is None:
         return None
-    disp = int(load.group(5) or "0", 16)
-    if load.group(4) == "-":
-        disp = -disp
-    table_addr = (base + disp) & MASK32
+    table_addr = (base + found.disp) & MASK32
     targets: list[int] = []
     for k in range(count):
         entry = amap.read_i32(data, table_addr + 4 * k)
@@ -351,16 +395,20 @@ def _entry_count(
     return None
 
 
-def _nearest_writer(insns: list[Insn], j: int) -> int | None:
-    """Index of the closest instruction before j that writes the register `jmp` uses."""
-    r_t = insns[j].ops
+def _last_writer(insns: list[Insn], j: int, reg: str) -> int | None:
+    """Index of the closest instruction before j that writes `reg`."""
     for k in range(j - 1, max(0, j - LOOKBACK) - 1, -1):
         insn = insns[k]
         if insn.mnem in NO_WRITE_MNEMONICS or insn.mnem.startswith("j"):
             continue
-        if insn.ops.split(",")[0] == r_t:
+        if insn.ops.split(",")[0] == reg:
             return k
     return None
+
+
+def _nearest_writer(insns: list[Insn], j: int) -> int | None:
+    """Index of the closest instruction before j that writes the register `jmp` uses."""
+    return _last_writer(insns, j, insns[j].ops)
 
 
 def _is_tailcall(insns: list[Insn], j: int) -> bool:

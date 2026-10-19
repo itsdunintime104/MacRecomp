@@ -24,6 +24,9 @@ void imp____cxa_guard_release(void);
 void imp____cxa_guard_abort(void);
 void imp____cxa_atexit(void);
 void imp___ZNSt8ios_base4InitC1Ev(void);
+void imp____memcpy_chk(void);
+void imp____memset_chk(void);
+void imp__SteamAPI_Shutdown(void);
 void imp__SteamAPI_Init(void);
 void imp__SteamAPI_RestartAppIfNecessary(void);
 void imp__SteamAPI_RunCallbacks(void);
@@ -215,6 +218,27 @@ static void test_steam_and_misc(void)
     check_protocol("dlsym");
     CHECK(g_eax == 0, "dlsym with a NULL name must return 0");
     call0(imp___ZNSt8ios_base4InitC1Ev, "ios_base::Init");
+    call0(imp__SteamAPI_Shutdown, "SteamAPI_Shutdown");
+}
+
+static void test_chk_copies(void)
+{
+    memset(guest_ptr(GUARD_ADDR), 0, 32);
+    memcpy(guest_ptr(GUARD_ADDR + 16), "0123456789", 10);
+    uint32_t copy[4] = {GUARD_ADDR, GUARD_ADDR + 16, 10, 0xFFFFFFFFu};
+    setup_call(copy, 4);
+    imp____memcpy_chk();
+    check_protocol("memcpy_chk");
+    CHECK(g_eax == GUARD_ADDR, "memcpy_chk returns dst");
+    CHECK(memcmp(guest_ptr(GUARD_ADDR), "0123456789", 10) == 0, "memcpy_chk copies");
+
+    uint32_t fill[4] = {GUARD_ADDR, 0xAB, 8, 16};
+    setup_call(fill, 4);
+    imp____memset_chk();
+    check_protocol("memset_chk");
+    CHECK(g_eax == GUARD_ADDR, "memset_chk returns dst");
+    CHECK(((uint8_t *)guest_ptr(GUARD_ADDR))[7] == 0xAB, "memset_chk fills");
+    CHECK(((uint8_t *)guest_ptr(GUARD_ADDR))[8] == '8', "memset_chk stops at len");
 }
 
 int main(void)
@@ -231,6 +255,7 @@ int main(void)
     test_guard();
     test_atexit();
     test_steam_and_misc();
+    test_chk_copies();
     if (g_failures) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

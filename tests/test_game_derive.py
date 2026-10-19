@@ -24,7 +24,8 @@ ENTRY = 0x2720
 STATIC_BASE = 0x019D0000
 NUMAIN_CFSTRING = 0x016876D4
 OVERRIDES = ["0x003D18A0", "0x003D19C0", "0x003D1A80", "0x003D1AE0", "0x003D1AF0"]
-AFTER_RULE = {"fe_screen_size", "fe_make_current", "fe_swap_buffers", "fe_backing_size", "pad_release"}
+AFTER_RULE = {"fe_make_current", "fe_swap_buffers", "fe_backing_size", "pad_release", "view_mouse_button"}
+NEXT_RULE = {"fe_screen_size"}
 SHELL_KEYS = [
     "GAME_ROOT", "GAME_ID", "GAME_TITLE", "WINDOW_TITLE", "STEAM_APP_ID", "STEAM_BUILD", "STEAM_APP",
     "GAME_EXE", "BINARY_SHA256", "BINARY", "ANALYSIS", "SWITCH_TABLES", "IMPORT_SIGS", "ENV_PREFIX", "APP_NAME",
@@ -63,6 +64,7 @@ def test_hobbit_values_equal_hand_typed(
     for fn in frontend.functions:
         assert doc["functions"][fn.name]["va"] == fn.ref, fn.name
     assert {n for n, f in doc["functions"].items() if f["rule"] == "after"} == AFTER_RULE
+    assert {n for n, f in doc["functions"].items() if f["rule"] == "next"} == NEXT_RULE
     for d in frontend.data:
         assert doc["data"][d.name] == d.ref, d.name
 
@@ -135,3 +137,120 @@ def test_profile_shell_output() -> None:
     assert "GAME_ID=hobbit" in out
     assert "STEAM_APP_ID=285160" in out
     assert f"BINARY={shlex.quote(str(refgame.GAME_ROOT / 'orig.nosync/hobbit_i386'))}" in out
+
+
+def test_mask_is_instruction_aware() -> None:
+    code = bytes.fromhex(
+        "8b8800c95c01"          # mov ecx, [eax+0x15cc900]: the whole disp32 is masked, including c9
+        "e801020304"            # call rel32
+        "c7442404" "00104000"   # mov dword [esp+4], 0x401000: immediate inside the image
+        "8b4dcc"                # mov ecx, [ebp-0x34]: small disp stays
+        "c785b4fcffff" "05000000"  # mov dword [ebp-0x34c], 5: small disp and small imm stay
+    )
+    pat = feral._mask(code, 0x2000, 0x1000, 0x2000000)
+    assert pat == [
+        0x8B, 0x88, None, None, None, None,
+        0xE8, None, None, None, None,
+        0xC7, 0x44, 0x24, 0x04, None, None, None, None,
+        0x8B, 0x4D, 0xCC,
+        0xC7, 0x85, 0xB4, 0xFC, 0xFF, 0xFF, 0x05, 0x00, 0x00, 0x00,
+    ]
+    long = b"\x90" * (feral.SIG_BYTES - 1) + bytes.fromhex("8b8800100000")  # insn crosses SIG_BYTES
+    pat = feral._mask(long, 0x2000, 0x1000, 0x2000000)
+    assert len(pat) == feral.SIG_BYTES + 5 and pat[-4:] == [None] * 4
+
+
+def with_functions(frontend: feral.Frontend, **changes: dict[str, Any]) -> feral.Frontend:
+    funcs = tuple(
+        dataclasses.replace(f, **changes[f.name]) if f.name in changes else f for f in frontend.functions
+    )
+    return dataclasses.replace(frontend, functions=funcs)
+
+
+def test_next_rule(image: feral.Image, frontend: feral.Frontend) -> None:
+    unique = feral.resolve(image, frontend, {})["fe_set_view_frame"]
+    assert (unique.va, unique.rule) == (0x3DCDF0, feral.Rule.UNIQUE)
+    lost = with_functions(frontend, fe_set_view_frame={"sig": "00 00 00 00 00 00 00 00 00 00 00 00"})
+    nxt = feral.resolve(image, lost, {})["fe_set_view_frame"]
+    assert (nxt.va, nxt.rule, nxt.matches) == (0x3DCDF0, feral.Rule.NEXT, 0)
+    both = with_functions(frontend, fe_make_current={"next": "fe_alert"})  # `after` outranks `next`
+    after = feral.resolve(image, both, {})["fe_make_current"]
+    assert (after.va, after.rule) == (0x3DE7F0, feral.Rule.AFTER)
+    cycle = with_functions(
+        lost, fe_view_frame={"sig": "00 00 00 00 00 00 00 00 00 00 00 00", "next": "fe_set_view_frame"}
+    )
+    with pytest.raises(feral.FeralError, match="cannot be resolved"):
+        feral.resolve(image, cycle, {})
+
+
+def test_absent_entries_are_skipped_and_flagged(image: feral.Image, frontend: feral.Frontend) -> None:
+    absent = frozenset({"fe_backing_size", "G_INIT_ONCE"})
+    prof = dataclasses.replace(profile.load(GAME_TOML), absent=tuple(sorted(absent)))
+    derived = derive.compute(prof, frontend, image)
+    assert "fe_backing_size" not in derived.functions and "G_INIT_ONCE" not in derived.data
+    text = derive.render_feral_symbols(prof, frontend, derived)
+    assert "#define FE_HAS_FE_BACKING_SIZE 0\n" in text and "#define FE_HAS_G_INIT_ONCE 0\n" in text
+    assert "#define FE_HAS_G_RETINA 1\n" in text and "#define FE_HAS_FE_ALERT 1\n" in text
+    assert "fe_backing_size" not in text and "G_INIT_ONCE 0x" not in text
+    assert "003DFF70" not in text and "003DFF70" not in derive.render_frontend_rename(prof, frontend, derived)
+    with pytest.raises(feral.FeralError, match="unknown entry nope"):
+        feral.validate_absent(frontend, frozenset({"nope"}))
+
+
+def test_profile_reads_absent(tmp_path: Path) -> None:
+    path = tmp_path / "game.toml"
+    path.write_text(GAME_TOML.read_text().replace('env_prefix = "HOBBIT"', 'env_prefix = "HOBBIT"\nabsent = ["a", "b"]'))
+    assert profile.load(path).absent == ("a", "b")
+    assert profile.load(GAME_TOML).absent == ()
+
+
+def test_data_nth_operand(image: feral.Image, frontend: feral.Frontend) -> None:
+    resolved = feral.resolve(image, frontend, {})
+    entry = next(d for d in frontend.data if d.name == "G_WINDOWS")
+    assert entry.func == "fe_open_window" and entry.insn is not None and entry.nth is not None
+    beyond = dataclasses.replace(entry, nth=entry.nth + 1000)
+    with pytest.raises(feral.FeralError, match=r"G_WINDOWS: fe_open_window has no operand #"):
+        feral.derive_data(image, dataclasses.replace(frontend, data=(beyond,)), resolved)
+    elsewhere = dataclasses.replace(entry, func="fe_pool_create")  # typed anchor without such an operand
+    with pytest.raises(feral.FeralError, match="G_WINDOWS: no PIC-based operand in fe_pool_create"):
+        feral.refresh(dataclasses.replace(frontend, data=(elsewhere,)), image)
+
+
+def test_numain_absent(image: feral.Image, frontend: feral.Frontend) -> None:
+    base = profile.load(GAME_TOML)
+    present = derive.compute(base, frontend, image)
+    assert present.cfstr_numain == NUMAIN_CFSTRING
+    prof = dataclasses.replace(base, absent=("NuMain",))
+    derived = derive.compute(prof, frontend, image)
+    config = derive.render_game_config(prof, derived)
+    assert "#define GAME_CFSTR_NUMAIN 0x00000000u\n" in config
+    assert json.loads(derive.render_derived_json(prof, derived))["cfstr_numain"] == 0
+
+
+def test_next_rule_pick_must_be_a_signature_match(image: feral.Image, frontend: feral.Frontend) -> None:
+    make_current = next(f for f in frontend.functions if f.name == "fe_make_current")  # 2 matches
+    wrong = with_functions(frontend, fe_set_view_frame={"sig": make_current.sig})
+    with pytest.raises(feral.FeralError, match=r"fe_set_view_frame: rule 'next fe_view_frame' picks 0x003DCDF0, .* 2 signature"):
+        feral.resolve(image, wrong, {})
+
+
+def pic_operands(code: str) -> list[tuple[int, int]]:
+    insns = list(feral._disassembler().disasm(bytes.fromhex(code.replace(" ", "")), 0x1000))
+    return [(o.disp, o.base) for o in feral._track_pic(insns)]
+
+
+def test_each_register_keeps_its_own_pic_base() -> None:
+    assert pic_operands(
+        "e800000000 5b"          # call $+5; pop ebx: base 0x1005
+        "e800000000 59"          # call $+5; pop ecx: base 0x100b
+        "8b8300200000"           # mov eax, [ebx+0x2000]
+        "8b9100200000"           # mov edx, [ecx+0x2000]
+    ) == [(0x2000, 0x1005), (0x2000, 0x100B)]
+
+
+def test_spill_slot_loses_its_pic_base_when_written() -> None:
+    head = "e800000000 58 8945fc"  # call $+5; pop eax; mov [ebp-4], eax
+    use = "8b4dfc 8b9100200000"    # mov ecx, [ebp-4]; mov edx, [ecx+0x2000]
+    assert pic_operands(head + use) == [(0x2000, 0x1005)]
+    for write in ("c745fc00000000", "8355fc01", "8955fc"):  # mov imm, adc imm, mov from a register without a base
+        assert pic_operands(head + write + use) == [], write
