@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 
 #include "data_imports.h"
+#include "feral_loader.h"
 #include "guest_call.h"
 #include "guest_heap.h"
 #include "guest_mem.h"
@@ -82,9 +83,22 @@ static uint32_t registered(const char *name)
 
 static void dummy_thunk(void) {}
 
+/* Any other host function gets a fake address from this table. */
+#define VA_HOST_BASE 0xFE100000u
+static recomp_func_t g_host_fn[8];
+static int g_nhost_fn;
+
 uint32_t host_func_va(recomp_func_t fn)
 {
-    return fn == dummy_thunk ? FAKE_VA : 0;
+    if (fn == dummy_thunk)
+        return FAKE_VA;
+    for (int i = 0; i < g_nhost_fn; i++)
+        if (g_host_fn[i] == fn)
+            return VA_HOST_BASE + (uint32_t)i;
+    if (g_nhost_fn == 8)
+        return 0;
+    g_host_fn[g_nhost_fn] = fn;
+    return VA_HOST_BASE + (uint32_t)g_nhost_fn++;
 }
 
 recomp_func_t import_func_by_name(const char *name)
@@ -105,6 +119,8 @@ static void guest_applier(void)
 
 recomp_func_t recomp_lookup(uint32_t va)
 {
+    if (va >= VA_HOST_BASE && va - VA_HOST_BASE < (uint32_t)g_nhost_fn)
+        return g_host_fn[va - VA_HOST_BASE];
     return va == VA_APPLIER ? guest_applier : NULL;
 }
 
@@ -370,6 +386,15 @@ static void test_runloop_bundle_misc(void)
     nm = CFStringCreateWithCString(NULL, "nothere", kCFStringEncodingUTF8);
     CHECK(CALL(imp__CFBundleGetFunctionPointerForName, b, cf_to_guest(nm)) == 0, "missing function pointer");
     CFRelease(nm);
+
+    /* Content.loader entry points are native: MainEntry (Marvel) returns 1. */
+    uint32_t main_va = feral_loader_lookup("MainEntry");
+    CHECK(main_va != 0 && feral_loader_lookup("FeralEntry") != 0, "loader entry lookup");
+    CHECK(feral_loader_lookup("NotAnEntry") == 0, "unknown loader entry");
+    recomp_func_t main_entry = recomp_lookup(main_va);
+    CHECK(main_entry != NULL, "MainEntry resolves");
+    if (main_entry != NULL)
+        CHECK(call_pop(main_entry, NULL, 0, 4) == 1, "MainEntry returns 1");
 
     uint32_t loc = CALL0(imp__CFLocaleCopyCurrent);
     CHECK(loc >= HANDLE_BASE, "locale handle");
