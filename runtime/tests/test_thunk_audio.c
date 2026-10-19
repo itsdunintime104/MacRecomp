@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "guest_heap.h"
@@ -73,6 +74,8 @@ static _Atomic int g_notify_bad_args;
 static double g_phase; /* render callback runs on one thread */
 static double g_last_sample_time = -1;
 static _Atomic int g_ts_not_increasing;
+static _Atomic int g_host_time_valid;
+static _Atomic int g_host_time_not_ns;
 
 /* Guest render callback: (refcon, flags*, timestamp*, bus, frames, abl*). */
 static void guest_render(void)
@@ -86,6 +89,20 @@ static void guest_render(void)
     if (sample_time <= g_last_sample_time)
         g_ts_not_increasing++;
     g_last_sample_time = sample_time;
+
+    /* AudioTimeStamp: mHostTime at 8, mFlags at 56. The guest clock is nanoseconds
+     * since boot, so a valid mHostTime must be near the host's uptime in ns. */
+    uint64_t host_time;
+    uint32_t ts_flags;
+    memcpy(&host_time, guest_ptr(ts + 8), sizeof host_time);
+    memcpy(&ts_flags, guest_ptr(ts + 56), sizeof ts_flags);
+    if (ts_flags & kAudioTimeStampHostTimeValid) {
+        g_host_time_valid++;
+        uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        int64_t ahead = (int64_t)(host_time - now);
+        if (ahead > 1000000000 || ahead < -5000000000)
+            g_host_time_not_ns++;
+    }
 
     uint32_t nb = MEM32(abl);
     g_render_frames += frames;
@@ -455,6 +472,8 @@ int main(void)
     CHECK(g_render_buffers > 0 && g_render_bytes > 0, "empty buffer list (%u buffers, %u bytes)",
           g_render_buffers, g_render_bytes);
     CHECK(g_ts_not_increasing == 0, "timestamp sample time did not increase");
+    CHECK(g_host_time_valid > 0 && g_host_time_not_ns == 0, "mHostTime in ns (%d valid, %d wrong)",
+          g_host_time_valid, g_host_time_not_ns);
     CHECK(g_notify_calls >= 5, "render notify ran %d times", g_notify_calls);
     CHECK(g_notify_bad_args == 0, "render notify got the wrong refcon");
     CHECK(g_notify_nonzero > 0, "no non-zero samples reached the host buffer");

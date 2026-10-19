@@ -536,9 +536,12 @@ void imp__gettimeofday(void)
     ret_status(rc);
 }
 
+/* i386 Macs had timebase 1/1, and some Feral code divides the wrong way
+ * round (LEGO Marvel 0x002239D8: numer*1e9/denom). The guest must therefore
+ * see 1/1 with nanosecond ticks, not the host's ticks. */
 void imp__mach_absolute_time(void)
 {
-    uint64_t t = mach_absolute_time();
+    uint64_t t = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); /* the clock of mach_absolute_time, in ns */
     g_eax = (uint32_t)t;
     g_edx = (uint32_t)(t >> 32);
     g_esp += 4;
@@ -546,15 +549,11 @@ void imp__mach_absolute_time(void)
 
 void imp__mach_timebase_info(void)
 {
-    mach_timebase_info_data_t info;
     uint32_t out = arg(0);
-    kern_return_t kr = mach_timebase_info(&info);
 
-    if (kr == KERN_SUCCESS) {
-        put32(out, info.numer);
-        put32(out + 4, info.denom);
-    }
-    ret32((uint32_t)kr);
+    put32(out, 1);
+    put32(out + 4, 1);
+    ret32((uint32_t)KERN_SUCCESS);
 }
 
 static pthread_mutex_t g_zone_lock = PTHREAD_MUTEX_INITIALIZER;

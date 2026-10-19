@@ -24,7 +24,9 @@
  *     layout, 4-byte fields and floats). Also forwarded: 'nsrt' and 'bsiz'.
  *     Anything else returns 'who?'.
  * AudioTimeStamp is 64 bytes with identical offsets on both sides, so it is
- * copied as is. AudioBufferList differs (12-byte buffers in the guest, 16 on
+ * copied as is, except mHostTime: the guest clock is nanoseconds (timebase
+ * 1/1, thunk_files.c), so a valid mHostTime is converted from host ticks.
+ * AudioBufferList differs (12-byte buffers in the guest, 16 on
  * the host) and is rebuilt on every call. */
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreAudio/CoreAudio.h>
@@ -247,9 +249,12 @@ static OSStatus render_trampoline(void *refcon, AudioUnitRenderActionFlags *flag
     uint32_t blk = t_audio.block;
     uint32_t abl = blk + BLK_ABL;
     MEM32(blk + BLK_FLAGS) = flags != NULL ? *flags : 0;
-    if (ts != NULL)
-        memcpy(guest_ptr(blk + BLK_TS), ts, sizeof(AudioTimeStamp));
-    else
+    if (ts != NULL) {
+        AudioTimeStamp *gts = guest_ptr(blk + BLK_TS);
+        memcpy(gts, ts, sizeof(AudioTimeStamp));
+        if (ts->mFlags & kAudioTimeStampHostTimeValid)
+            gts->mHostTime = AudioConvertHostTimeToNanos(ts->mHostTime);
+    } else
         memset(guest_ptr(blk + BLK_TS), 0, sizeof(AudioTimeStamp));
 
     uint32_t nb = io != NULL ? io->mNumberBuffers : 0;

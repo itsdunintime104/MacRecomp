@@ -298,11 +298,19 @@ void fe_display_setup(void)
     RET(0);
 }
 
-/* fe_screen_size(int *w, int *h): main screen size. */
+/* fe_screen_size(int *w, int *h): main screen size. A game without Retina code
+ * drops every display mode larger than this size, and the modes are in pixels
+ * (fe_mode_sizes), so it gets the panel's pixel size. */
 void fe_screen_size(void)
 {
     int w, h;
+#if FE_HAS_FE_BACKING_SIZE
     fe_render_size(&w, &h);
+#else
+    fe_mode_sizes();
+    w = s_mode_w[0];
+    h = s_mode_h[0];
+#endif
     MEM32(ARG(0)) = (uint32_t)w;
     MEM32(ARG(1)) = (uint32_t)h;
     RET(0);

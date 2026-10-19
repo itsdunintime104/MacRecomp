@@ -8,7 +8,14 @@
  *     dispatch_sync(main queue, ^{ gTTMain(0, NULL); }); return 0;
  * so the game runs on the main thread with no arguments. This file keeps that
  * call and drops the shell (launcher window, preferences, Steam, receipts),
- * which the game does not depend on. Evidence: docs/FERAL_LOADER.md. */
+ * which the game does not depend on. Evidence: docs/FERAL_LOADER.md.
+ *
+ * LEGO Marvel uses a different protocol. Its main (0x0025BC00) loads
+ * Resources/Content.loader and calls MainEntry() with no arguments. Only if
+ * the result is 1 does it call the game entry 0x0071E980(argc, argv) itself,
+ * then exit(result) (0x0025BC7B-0x0025BCAB). The bundle's MainEntry is the
+ * older Feral loader (launcher shell); like FeralEntry we drop the shell and
+ * return 1. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -51,9 +58,19 @@ static void feral_entry(void)
     RET(0);
 }
 
+/* int MainEntry(void), cdecl: Marvel's launcher check. */
+static void main_entry(void)
+{
+    RET(1);
+}
+
 uint32_t feral_loader_lookup(const char *name)
 {
-    if (name != NULL && strcmp(name, "FeralEntry") == 0)
+    if (name == NULL)
+        return 0;
+    if (strcmp(name, "FeralEntry") == 0)
         return host_func_va(feral_entry);
+    if (strcmp(name, "MainEntry") == 0)
+        return host_func_va(main_entry);
     return 0;
 }
