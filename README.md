@@ -16,8 +16,8 @@ This repo holds no game code or data. Each game has its own repo, which pins thi
 
 | Game | App | Repo | Steam build | recomp-check | boot-check (60 s) | Tested on an M1 Max |
 |---|---|---|---|---|---|---|
-| LEGO The Hobbit | Hobbit Recompiled | [LegoHobbitRecomp](https://github.com/itsdunintime104/LegoHobbitRecomp) | 84019 | PASS | PASS | Levels 1–3 played, level 1 saved. 88–129 FPS in levels 2–3 |
-| LEGO Marvel Super Heroes | Superheros Bricks Recompiled | [MarvelRecomp](https://github.com/itsdunintime104/MarvelRecomp) | 329428 | PASS | PASS | Intro, menus and level 1 played. 72.5 FPS (1% low 39.7) at 2592 × 1674 |
+| LEGO The Hobbit | Hobbit Recompiled | [HobbitRecompiled](https://github.com/itsdunintime104/HobbitRecompiled) | 84019 | PASS | PASS | Levels 1–3 played, level 1 saved. 88–129 FPS in levels 2–3 |
+| LEGO Marvel Super Heroes | Superheros Bricks Recompiled | [SuperheroBrickRecomp](https://github.com/itsdunintime104/SuperheroBrickRecomp) | 329428 | PASS | PASS | Intro, menus and level 1 played. 72.5 FPS (1% low 39.7) at 2592 × 1674 |
 
 Both are Feral Interactive ports.
 
