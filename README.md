@@ -17,7 +17,7 @@ This repo holds no game code or data. Each game has its own repo, which pins thi
 | Game | Repo | Steam build | recomp-check | boot-check (60 s) | Tested |
 |---|---|---|---|---|---|
 | LEGO The Hobbit | [LegoHobbitRecomp](https://github.com/itsdunintime104/LegoHobbitRecomp) | 84019 | PASS | PASS | Levels 1–3 played; level 1 saved. 88–129 FPS in levels 2–3 on an M1 Max (2026-10-18) |
-| LEGO Marvel Super Heroes | [MarvelRecomp](https://github.com/itsdunintime104/MarvelRecomp) | 329428 | PASS | PASS | Menus and play in one 32-minute session at 2592x1674. Gameplay FPS not measured yet |
+| LEGO Marvel Super Heroes | [MarvelRecomp](https://github.com/itsdunintime104/MarvelRecomp) | 329428 | PASS | PASS | Intro, menus and level 1 played. 72.5 FPS (1% low 39.7) at 2592x1674 on an M1 Max (2026-10-19) |
 
 Both are Feral Interactive ports. Both games build from the same engine commit.
 
