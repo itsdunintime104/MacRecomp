@@ -238,6 +238,7 @@ static void *g_tex_pbo_ctx;
 /* Imported by the game; replaces the generated thunk. */
 void imp__glTexImage2D(void)
 {
+    stat_count_tex_upload();
     uint32_t bytes = 0;
     if (U(8) != 0 && g_bound[GL_BIND_UNPACK] == 0)
         bytes = image_bytes(S(3), S(4), U(6), U(7));
@@ -266,6 +267,7 @@ static void t_CompressedTexImage1D(void)
 
 static void t_CompressedTexImage2D(void)
 {
+    stat_count_tex_upload();
     glCompressedTexImage2D(U(0), S(1), U(2), S(3), S(4), S(5), S(6), gl_buf_ptr(GL_BIND_UNPACK, U(7)));
     g_esp += 4;
 }
@@ -285,6 +287,7 @@ static void t_CompressedTexSubImage1D(void)
 
 static void t_CompressedTexSubImage2D(void)
 {
+    stat_count_tex_upload();
     glCompressedTexSubImage2D(U(0), S(1), S(2), S(3), S(4), S(5), U(6), S(7),
                               gl_buf_ptr(GL_BIND_UNPACK, U(8)));
     g_esp += 4;
@@ -640,6 +643,42 @@ static void t_GetBufferPointerv(void)
     g_esp += 4;
 }
 
+/* void glFlushMappedBufferRangeAPPLE(target, GLintptr offset, GLsizeiptr size).
+ * A mirror-backed map has no GL mapping, so there is nothing to flush: unmap
+ * uploads the changed bytes. A real map is flushed after the guest's shadow
+ * bytes are copied into it. */
+static void t_FlushMappedBufferRangeAPPLE(void)
+{
+    uint32_t target = U(0), buffer = bound_buffer(target);
+    intptr_t offset = (intptr_t)S(1), size = (intptr_t)S(2);
+    uint8_t *real = NULL;
+    uint32_t shadow = 0, map_size = 0, access = 0;
+    pthread_mutex_lock(&g_map_lock);
+    int i = find_map(target, buffer, CGLGetCurrentContext());
+    int found = i >= 0;
+    if (found) {
+        real = g_maps[i].real;
+        shadow = g_maps[i].shadow;
+        map_size = g_maps[i].size;
+        access = g_maps[i].access;
+    }
+    pthread_mutex_unlock(&g_map_lock);
+    if (found && real == NULL) {
+        g_esp += 4;
+        return;
+    }
+    if (found) {
+        if (offset < 0 || offset > (intptr_t)map_size)
+            offset = (intptr_t)map_size;
+        if (size < 0 || size > (intptr_t)map_size - offset)
+            size = (intptr_t)map_size - offset;
+        if (access != GL_READ_ONLY)
+            memcpy(real + offset, (uint8_t *)guest_ptr(shadow) + offset, (size_t)size);
+    }
+    glFlushMappedBufferRangeAPPLE(target, offset, size);
+    g_esp += 4;
+}
+
 /* ---- thunks with plain scalar and guest-pointer arguments ---------------- */
 
 #define DEF_V(id, call) static void t_##id(void) { call; g_esp += 4; }
@@ -894,6 +933,7 @@ static const struct gl_entry g_table[] = {
     E_ARB(BindBuffer), E_ARB(DeleteBuffers), E_ARB(GenBuffers), E_ARB(BufferData),
     E_ARB(BufferSubData), E_ARB(GetBufferSubData), E_ARB(GetBufferParameteriv),
     E_ARB(IsBuffer), E_ARB(MapBuffer), E_ARB(UnmapBuffer), E_ARB(GetBufferPointerv),
+    E(FlushMappedBufferRangeAPPLE),
     E_ARB(VertexAttribPointer), E_ARB(GetVertexAttribPointerv),
     E_ARB(EnableVertexAttribArray), E_ARB(DisableVertexAttribArray),
     E_EXT(DrawRangeElements), E_EXT(MultiDrawElements), E_EXT(MultiDrawArrays),

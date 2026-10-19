@@ -15,6 +15,7 @@ SOURCES = [
     "runtime/src/guest_mem.c",
     "runtime/src/macho_load.c",
     "runtime/src/recomp_glue.c",
+    "runtime/src/stats.c",
     "runtime/tests/test_thunk_audio.c",
 ]
 
@@ -27,7 +28,7 @@ def test_thunk_audio(tmp_path: Path) -> None:
             "-I", "tools/xrecomp/include", "-I", "runtime/include", "-I", "runtime/tests/include",
             *SOURCES,
             "-framework", "AudioToolbox", "-framework", "CoreAudio",
-            "-framework", "CoreFoundation", "-o", str(exe),
+            "-framework", "CoreFoundation", "-framework", "OpenGL", "-o", str(exe),
         ],
         cwd=ROOT,
         check=True,

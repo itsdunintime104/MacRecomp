@@ -551,6 +551,39 @@ static void test_map_mirror(void)
     bind_array(0);
 }
 
+/* glFlushMappedBufferRangeAPPLE: with flushing-on-unmap off, a flush must raise no
+ * GL error for a real map (first map) or a mirror map (second map), and the
+ * written bytes must reach the buffer. */
+static void test_flush_mapped_range(void)
+{
+    uint8_t want[64];
+    memset(want, 0x21, sizeof want);
+    uint32_t vbo = gen_buffer();
+    bind_array(vbo);
+    buffer_data(64, want);
+    glBufferParameteriAPPLE(GL_ARRAY_BUFFER, GL_BUFFER_FLUSHING_UNMAP_APPLE, GL_FALSE);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    uint32_t flush[3] = {GL_ARRAY_BUFFER, 8, 8};
+    for (int round = 0; round < 2; round++) { /* real map, then mirror map */
+        uint32_t p = wo_map();
+        CHECK(p != 0, "flush test: map %d failed", round);
+        if (p == 0)
+            break;
+        for (int i = 8; i < 16; i++)
+            ((uint8_t *)guest_ptr(p))[i] = want[i] = (uint8_t)(0x40 + round * 0x10 + i);
+        call(gl("glFlushMappedBufferRangeAPPLE"), 3, flush);
+        GLenum err = glGetError();
+        CHECK(err == GL_NO_ERROR, "flush test: map %d flush gave GL error 0x%x", round, err);
+        CHECK(wo_unmap() == GL_TRUE, "flush test: unmap %d failed", round);
+        check_gl(want, 64, "after flush test unmap");
+    }
+    MEM32(SCRATCH + 0x300) = vbo;
+    uint32_t del[2] = {1, SCRATCH + 0x300};
+    call(gl("glDeleteBuffersARB"), 2, del);
+    bind_array(0);
+}
+
 /* GLhandleARB / GLsync handles reach the guest as small u32 names, and a
  * shader source in guest memory compiles. */
 static void test_shader_objects(void)
@@ -657,6 +690,7 @@ int main(void)
     test_map_roundtrip();
     test_map_two_buffers();
     test_map_mirror();
+    test_flush_mapped_range();
     test_shader_objects();
     if (g_failures != 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);

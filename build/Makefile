@@ -88,8 +88,33 @@ $(STUB_SRC): $(GEN)/imports.h $(IMPORT_SIGS) $(ROOT)/tools/hobbit/emit_import_st
 $(OBJ)/import_stubs.o: $(STUB_SRC) $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Fails when the translation has a gap (unhandled instruction, unset flag, failed function,
+# unexplained jump). FUZZ=1 also runs the leaf fuzzer (about a minute).
+FUZZ ?= 0
+recomp-check: $(GAME_OUT)/game.mk
+	cd $(ROOT) && $(PY) -m tools.checks.recomp_check --profile $(abspath $(GAME)) $(if $(filter 1,$(FUZZ)),--fuzz)
+
+# Runs the built game unattended for SECONDS on a copy of its saves and fails unless the log shows
+# rendering, texture uploads and audio with no errors. GUARD=1 adds the guest heap guard (named
+# GUARD because HEAP_DEBUG/HEAP_GUARD already mean dlmalloc debugging). Refuses if the game is running.
+SECONDS ?= 60
+GUARD ?= 0
+boot-check: $(GAME_OUT)/game.mk
+	cd $(ROOT) && $(PY) -m tools.checks.boot_check --profile $(abspath $(GAME)) --seconds $(SECONDS) $(if $(filter 1,$(GUARD)),--heap-guard)
+
+# Diagnostic dylib that names the GL call raising a GL error (not part of `all`). Run a game with
+#   DYLD_INSERT_LIBRARIES=build.nosync/glerr.dylib build.nosync/<game id> ...
+# The generator reads the SDK's OpenGL headers, so it wraps exactly what they declare.
+$(OUT)/glerr.c: $(ROOT)/tools/glcount/emit_glerr.py
+	$(PY) -I $< "$$(xcrun --show-sdk-path)" $@
+
+$(OUT)/glerr.dylib: $(OUT)/glerr.c
+	$(CC) -arch arm64 -dynamiclib -O1 -w -o $@ $< -framework OpenGL
+
+glerr: $(OUT)/glerr.dylib
+
 # Double-clickable launcher bundle in "build.nosync/<app name>.app".
 app: $(OUT)/$(GAME_ID) $(OUT)/cghelper
 	PYTHON=$(PY) $(ROOT)/tools/package/make_app.sh $(abspath $(GAME))
 
-.PHONY: all app game
+.PHONY: all app game recomp-check boot-check glerr

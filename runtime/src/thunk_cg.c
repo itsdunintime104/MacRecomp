@@ -40,6 +40,7 @@
 #include "guest_heap.h"
 #include "guest_mem.h"
 #include "recomp_types.h"
+#include "stats.h"
 #include "../../tools/cghelper/cg_wire.h"
 
 extern char **environ;
@@ -449,6 +450,7 @@ static char *fetch_asm(uint32_t prog)
  *                           CGprofile, const char *entry, const char **args) */
 void imp__cgCreateProgram(void)
 {
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     uint32_t args = ARG(5);
     uint32_t nargs = 0;
     while (args && nargs < CGW_MAX_STR - 2 && MEM32(args + 4u * nargs))
@@ -492,6 +494,7 @@ void imp__cgCreateProgram(void)
         }
     }
     free(key);
+    stat_add_cg_program((unsigned long)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0));
     g_eax = h;
     g_esp += 4;
 }

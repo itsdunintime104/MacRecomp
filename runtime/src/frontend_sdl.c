@@ -34,6 +34,7 @@
 #include "guest_mem.h"
 #include "handles.h"
 #include "recomp_types.h"
+#include "stats.h"
 #include "thunk_cf.h"
 
 #define ARG(n) MEM32(g_esp + 4u + 4u * (n))
@@ -496,6 +497,7 @@ void fe_swap_buffers(void)
         fe_surface_size(&sw, &sh);
         fe_hud_frame(s_window, sw, sh);
         fe_frame_dump();
+        stats_on_swap();
         SDL_GL_SwapWindow(s_window);
         fe_hud_swap_done();
     }
@@ -1025,6 +1027,7 @@ void imp__CGLFlushDrawable(void)
         int sw = 0, sh = 0;
         fe_surface_size(&sw, &sh);
         fe_hud_frame(s_window, sw, sh);
+        stats_on_swap();
         SDL_GL_SwapWindow(s_window);
         fe_hud_swap_done();
     }

@@ -20,6 +20,7 @@ SOURCES = [
     "runtime/src/guest_mem.c",
     "runtime/src/macho_load.c",
     "runtime/src/recomp_glue.c",
+    "runtime/src/stats.c",
     "runtime/tests/test_thunk_cg.c",
 ]
 
@@ -39,7 +40,7 @@ def test_thunk_cg(tmp_path: Path) -> None:
         [
             "clang", "-std=gnu11", "-O1", "-arch", "arm64", "-w", "-DRECOMP_GLUE_NO_MAIN",
             "-I", "tools/xrecomp/include", "-I", "runtime/include", "-I", "runtime/tests/include",
-            *SOURCES, "-o", str(exe),
+            *SOURCES, "-framework", "OpenGL", "-o", str(exe),
         ],
         cwd=ROOT,
         check=True,
