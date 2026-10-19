@@ -37,8 +37,8 @@ A game repo has `game.toml` (copy one from an existing game repo to start a new 
 
 1. **Derive.** `make -C engine/build GAME=$PWD/game.toml game` reads the per-game values from the binary into `build.nosync/game/`: entry point, segments, static area, and front-end function and data addresses. It stops at the first value it cannot find.
 2. **Translate.** From `engine/`: `../.venv/bin/python -m tools.xrecomp.run --analysis ... --switch ... --bin ... --out ../generated.nosync --prefix <id> --overrides ../build.nosync/game/native_overrides.txt`.
-3. **Check.** `make -C engine/build GAME=$PWD/game.toml recomp-check` lists every instruction, jump or flag read the translator does not handle, and stops the build if there is one.
-4. **Build.** `make -C engine/build GAME=$PWD/game.toml`, then `... app` for the app bundle.
+3. **Check.** `make -C engine/build GAME=$PWD/game.toml recomp-check` lists every instruction, jump or flag read the translator does not handle. Any entry stops the build.
+4. **Build.** `make -C engine/build GAME=$PWD/game.toml`, then `make -C engine/build GAME=$PWD/game.toml app` for the app bundle.
 
 When `derive` cannot find a value (a signature matches zero times, or more than once), fix it in `game.toml`:
 
