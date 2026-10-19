@@ -30,6 +30,8 @@ void imp__gmtime_r(void);
 void imp__localtime_r(void);
 void imp__timegm(void);
 void imp__getpwuid(void);
+void imp__mach_absolute_time(void);
+void imp__mach_timebase_info(void);
 
 #define STACK_TOP 0x00F40000u
 #define SCRATCH 0x00F60000u
@@ -302,6 +304,26 @@ static void test_time(void)
     }
 }
 
+static uint64_t guest_ticks(void)
+{
+    call(imp__mach_absolute_time, 0);
+    return ((uint64_t)g_edx << 32) | g_eax;
+}
+
+static void test_mach_time(void)
+{
+    uint32_t info = galloc(8);
+    memset(guest_ptr(info), 0xFF, 8);
+    call(imp__mach_timebase_info, 1, info);
+    CHECK(g_eax == 0);
+    CHECK(rd32(info) == 1 && rd32(info + 4) == 1);
+
+    uint64_t t0 = guest_ticks();
+    nanosleep(&(struct timespec){0, 10000000}, NULL);
+    uint64_t dt = guest_ticks() - t0;
+    CHECK(dt >= 5000000 && dt <= 50000000);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -328,6 +350,7 @@ int main(int argc, char **argv)
     test_dirs(argv[1]);
     test_errno(argv[1]);
     test_time();
+    test_mach_time();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failures\n", g_failures);
