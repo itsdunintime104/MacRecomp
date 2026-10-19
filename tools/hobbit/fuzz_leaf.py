@@ -422,12 +422,14 @@ def summarize(results: list[dict[str, Any]], total_candidates: int, wall: float)
 def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     parser.add_argument("--binary", type=Path, default=None)
+    parser.add_argument("--analysis", type=Path, default=refgame.RECON / "analysis.json")
+    parser.add_argument("--switch", type=Path, default=refgame.RECON / "switch_tables.json")
     parser.add_argument("--work", type=Path, default=Path(tempfile.gettempdir()) / "hobbit-fuzz")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--limit", type=int, default=MAX_SAMPLE)
     args = parser.parse_args()
     binary = args.binary or refgame.binary()
-    analysis_path, switches_path = refgame.RECON / "analysis.json", refgame.RECON / "switch_tables.json"
+    analysis_path, switches_path = args.analysis, args.switch
     start = time.time()
     analysis = json.loads(analysis_path.read_text())
     cands, total = select_candidates(analysis, binary.read_bytes(), json.loads(switches_path.read_text()),

@@ -36,6 +36,7 @@ def test_thunk_rt(tmp_path: Path) -> None:
         str(ROOT / "runtime/src/macho_load.c"),
         str(ROOT / "runtime/src/recomp_glue.c"),
         str(ROOT / "runtime/src/host_funcs.c"),
+        str(ROOT / "runtime/src/stats.c"),
         str(ROOT / "runtime/tests/test_thunk_rt.c"),
         "-framework",
         "OpenGL",

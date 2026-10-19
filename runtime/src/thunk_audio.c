@@ -44,6 +44,7 @@
 #include "guest_mem.h"
 #include "handles.h"
 #include "recomp_types.h"
+#include "stats.h"
 
 #define ARG(n) MEM32(g_esp + 4u + 4u * (n))
 /* RECOMP_TRACE_AUDIO=1: log graph lifetimes, callbacks, failed calls and the
@@ -235,6 +236,7 @@ static OSStatus render_trampoline(void *refcon, AudioUnitRenderActionFlags *flag
                                   AudioBufferList *io)
 {
     struct render_ctx *ctx = refcon;
+    stat_count_audio_render();
     if (atomic_fetch_add(&ctx->calls, 1) == 0)
         trace_audio("first render ctx %p proc %#x refcon %#x bus %u frames %u", (void *)ctx,
                     ctx->proc, ctx->refcon, (unsigned)bus, (unsigned)frames);

@@ -15,6 +15,7 @@ SOURCES = [
     ROOT / "runtime" / "src" / "guest_mem.c",
     ROOT / "runtime" / "src" / "macho_load.c",
     ROOT / "runtime" / "src" / "recomp_glue.c",
+    ROOT / "runtime" / "src" / "stats.c",
     ROOT / "runtime" / "tests" / "test_gl_ext.c",
 ]
 

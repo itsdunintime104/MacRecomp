@@ -4,11 +4,14 @@
 #ifndef HUD_COUNTERS_H
 #define HUD_COUNTERS_H
 
+#include "stats.h"
+
 extern unsigned g_hud_draws, g_hud_maps;
 
 static inline void hud_count_draw(void)
 {
     __atomic_fetch_add(&g_hud_draws, 1u, __ATOMIC_RELAXED);
+    stat_count_draw();
 }
 
 static inline void hud_count_map(void)
