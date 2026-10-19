@@ -25,6 +25,8 @@ from tools.game import profile as game_profile
 
 STATS_PREFIX = "stats:"
 STATS_FIELD_RE = re.compile(r"(\w+)=(-?[0-9.]+)")
+UNSUPPORTED_RE = re.compile(r"^UNSUPPORTED \S+: ")
+GL_DRIVER_NOTICE_PREFIX = "UNSUPPORTED (log once)"
 MIN_DRAWS_PER_SWAP = 50
 MAX_LISTED = 10
 KILL_GRACE_SECONDS = 5
@@ -88,7 +90,11 @@ def judge(log_text: str, exited_early: bool, seconds: int, *, exit_code: int | N
     gl_lines = _lines_with(log_text, "gl: error")
     gl_total = int(stats.get("gl_errors", 0)) if stats else 0
     recomp_lines = _lines_with(log_text, "RECOMP:")
-    unsupported = _lines_with(log_text, "UNSUPPORTED")
+    unsupported = [ln for ln in log_text.splitlines() if UNSUPPORTED_RE.match(ln)]
+    driver_notices = [ln for ln in log_text.splitlines() if ln.startswith(GL_DRIVER_NOTICE_PREFIX)]
+    unsupported_detail = f"{len(unsupported)} UNSUPPORTED lines"
+    if driver_notices:
+        unsupported_detail += f" ({len(driver_notices)} GL driver notice, not counted)"
     heap_lines = _heap_lines(log_text, heap_guard)
     asserts = _lines_with(log_text, "Assertion")
     if exited_early:
@@ -105,8 +111,7 @@ def judge(log_text: str, exited_early: bool, seconds: int, *, exit_code: int | N
                     f"{len(gl_lines)} gl: lines, gl_errors={gl_total}", _listed(gl_lines)),
         CheckResult("translation gaps", not recomp_lines, f"{len(recomp_lines)} RECOMP: lines",
                     _listed(recomp_lines)),
-        CheckResult("unsupported calls", not unsupported, f"{len(unsupported)} UNSUPPORTED lines",
-                    _listed(unsupported)),
+        CheckResult("unsupported calls", not unsupported, unsupported_detail, _listed(unsupported)),
         CheckResult("heap", not heap_lines, f"{len(heap_lines)} guest_heap lines", _listed(heap_lines)),
         CheckResult("assertions", not asserts, f"{len(asserts)} Assertion lines", _listed(asserts)),
     ]

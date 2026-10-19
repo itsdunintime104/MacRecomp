@@ -477,8 +477,9 @@ static void log_slow(const char *name, uint64_t t0)
 {
     uint64_t t1 = now_ns();
     if (t1 - t0 > 2000000u)
-        fprintf(stderr, "audio: %s took %.1f ms at %.3f s (uptime)\n", name,
-                (double)(t1 - t0) / 1e6, (double)t1 / 1e9);
+        fprintf(stderr, "audio: %s took %.1f ms at %.3f s (uptime)%s\n", name,
+                (double)(t1 - t0) / 1e6, (double)t1 / 1e9,
+                pthread_main_np() ? " (main thread)" : "");
 }
 
 static AudioUnit g_keepalive;

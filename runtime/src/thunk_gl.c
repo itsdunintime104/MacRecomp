@@ -737,7 +737,33 @@ DEF_V(MultiTexCoord4f, glMultiTexCoord4f(U(0), FL(1), FL(2), FL(3), FL(4)))
 DEF_V(MultiTexCoord4fv, glMultiTexCoord4fv(U(0), P(1)))
 
 /* ARB_vertex_program and ARB_fragment_program (the Cg arbvp1/arbfp1 profiles) */
-DEF_V(GenProgramsARB, glGenProgramsARB(S(0), P(1)))
+/* One glGenProgramsARB call is a full sync with the multithreaded GL engine, and
+ * the game's shader thread made one per program while holding its GL lock. */
+#define PROGRAM_POOL_SIZE 64
+static void t_GenProgramsARB(void)
+{
+    static GLuint pool[PROGRAM_POOL_SIZE];
+    static int count;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    int32_t n = S(0);
+    GLuint *out = P(1);
+
+    if (n <= 0) {
+        glGenProgramsARB(n, out);
+        g_esp += 4;
+        return;
+    }
+    pthread_mutex_lock(&lock);
+    for (int32_t i = 0; i < n; i++) {
+        if (count == 0) {
+            glGenProgramsARB(PROGRAM_POOL_SIZE, pool);
+            count = PROGRAM_POOL_SIZE;
+        }
+        out[i] = pool[--count];
+    }
+    pthread_mutex_unlock(&lock);
+    g_esp += 4;
+}
 DEF_V(DeleteProgramsARB, glDeleteProgramsARB(S(0), P(1)))
 DEF_V(BindProgramARB, glBindProgramARB(U(0), U(1)))
 DEF_R(IsProgramARB, glIsProgramARB(U(0)))

@@ -68,6 +68,23 @@ def test_error_line_fails_its_check(line: str, check: str) -> None:
     assert any(line in listed for listed in failing.lines)
 
 
+def test_gl_driver_notice_is_not_an_unsupported_call() -> None:
+    notice = "UNSUPPORTED (log once): POSSIBLE ISSUE: unit 2 GLD_TEXTURE_INDEX_2D is unloadable"
+    results = boot_check.judge(GOOD_LOG + notice + "\n", False, 60)
+    assert _failed(results) == []
+    unsupported = next(r for r in results if r.name == "unsupported calls")
+    assert "1 GL driver notice, not counted" in unsupported.detail
+
+
+def test_our_unsupported_marker_fails_next_to_a_driver_notice() -> None:
+    ours = "UNSUPPORTED imp__Foo: not handled (guest return 0x00001234)"
+    log = GOOD_LOG + "UNSUPPORTED (log once): POSSIBLE ISSUE: x\n" + ours + "\n"
+    results = boot_check.judge(log, False, 60)
+    assert _failed(results) == ["unsupported calls"]
+    unsupported = next(r for r in results if r.name == "unsupported calls")
+    assert unsupported.lines == [f"  {ours}"]
+
+
 def test_listing_is_capped() -> None:
     log = GOOD_LOG + "".join(f"RECOMP: gap {i}\n" for i in range(30))
     failing = next(r for r in boot_check.judge(log, False, 60) if r.name == "translation gaps")

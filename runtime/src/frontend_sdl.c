@@ -733,7 +733,11 @@ void frontend_data_init(void)
 static const char *fe_guest_cstr(uint32_t a)
 {
     uint8_t b;
-    if (a == 0 || guest_mem_probe(a, &b) != 0)
+    if (a == 0)
+        return "?";
+    if (guest_addr_in_image(a))
+        return (const char *)guest_ptr(a);
+    if (guest_mem_probe(a, &b) != 0)
         return "?";
     return (const char *)guest_ptr(a);
 }

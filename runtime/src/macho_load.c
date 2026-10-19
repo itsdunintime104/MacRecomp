@@ -62,6 +62,21 @@ static int map_segment(int fd, const guest_segment_t *seg)
                      (uint64_t)seg->fileoff + skip);
 }
 
+static int segment_is_mapped(const guest_segment_t *seg)
+{
+    return strcmp(seg->name, "__PAGEZERO") != 0 && strcmp(seg->name, "__LINKEDIT") != 0;
+}
+
+int guest_addr_in_image(uint32_t a)
+{
+    for (unsigned i = 0; i < GUEST_SEGMENT_COUNT; i++) {
+        const guest_segment_t *seg = &GUEST_SEGMENTS[i];
+        if (segment_is_mapped(seg) && a >= seg->vmaddr && a - seg->vmaddr < seg->vmsize)
+            return 1;
+    }
+    return 0;
+}
+
 int guest_load_image(const char *path)
 {
     if (g_guest_base == NULL) {
@@ -77,7 +92,7 @@ int guest_load_image(const char *path)
     int rc = read_full(fd, g_image_header, GUEST_HEADER_SIZE, 0);
     for (unsigned i = 0; rc == 0 && i < GUEST_SEGMENT_COUNT; i++) {
         const guest_segment_t *seg = &GUEST_SEGMENTS[i];
-        if (strcmp(seg->name, "__PAGEZERO") == 0 || strcmp(seg->name, "__LINKEDIT") == 0)
+        if (!segment_is_mapped(seg))
             continue;
         rc = map_segment(fd, seg);
     }
