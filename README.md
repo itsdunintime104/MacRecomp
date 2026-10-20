@@ -16,7 +16,7 @@ This repo holds no game code or data. Each game has its own repo, which pins thi
 
 | Game | App | Repo | Steam build | recomp-check | boot-check (60 s) | Tested on an M1 Max |
 |---|---|---|---|---|---|---|
-| LEGO The Hobbit | Hobbit Recompiled | [HobbitRecompiled](https://github.com/itsdunintime104/HobbitRecompiled) | 84019 | PASS | PASS | Levels 1–3 played, level 1 saved. 88–129 FPS in levels 2–3 |
+| LEGO The Hobbit | Hobbit Recompiled | [HobbitRecompiled](https://github.com/itsdunintime104/HobbitRecompiled) | 84019 | PASS | PASS | Levels 1–3 played, level 1 finished. 88–129 FPS at 2592 × 1674 in levels 2–3 |
 | LEGO Marvel Super Heroes | Superheros Bricks Recompiled | [SuperheroBrickRecomp](https://github.com/itsdunintime104/SuperheroBrickRecomp) | 329428 | PASS | PASS | Intro, menus and level 1 played. 72.5 FPS (1% low 39.7) at 2592 × 1674 |
 
 Both are Feral Interactive ports.
@@ -59,6 +59,7 @@ An import with no replacement links as a placeholder. When the game calls it, th
 | `tools/cghelper/` | the x86_64 Cg helper |
 | `tools/checks/` | `recomp-check` and `boot-check` |
 | `tools/package/` | app bundle and launcher |
+| `tools/perf/` | `plot_frames`, which turns a frame-time CSV into a chart |
 | `runtime/` | startup, guest memory, import replacements, SDL2 front end, Steam stand-in |
 | `build/Makefile` | compiles and links the generated C and the runtime |
 | `tests/` | translator and runtime tests |
