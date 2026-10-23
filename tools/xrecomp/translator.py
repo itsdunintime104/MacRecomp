@@ -2568,7 +2568,8 @@ class FunctionTranslator:
         # hardcoded to one game's CRT here, so for every other title the forcing
         # silently never fired and the generated C failed to compile with
         # "'ebp': undeclared identifier".
-        seh_funcs = _seh_prologs_of(self.lifter)
+        seh_funcs = _seh_prologs_of(self.lifter) | set(
+            getattr(self.lifter, "SEH_EPILOGS", ()))
         epilog = getattr(self.lifter, "SEH_EPILOG", None)
         if epilog is not None:
             seh_funcs = seh_funcs | {epilog}
@@ -3196,8 +3197,8 @@ class BatchTranslator:
             force_returns=force_returns, icall_sites=self.icall_sites)
         self.translator.protected_function_starts = set(
             protected_function_starts or ())
-        for explicit_helper in (seh_prolog, seh_epilog):
-            if explicit_helper not in (None, 0):
+        for explicit_helper in _as_addr_set(seh_prolog) | _as_addr_set(seh_epilog):
+            if explicit_helper != 0:
                 self.translator.protected_function_starts.add(explicit_helper)
         if coalesce_json_paths:
             self.translator.discover_static_indirect_targets(coalescing=True)
@@ -3216,7 +3217,9 @@ class BatchTranslator:
         # Detect once here so the result can be reported and overridden from
         # the command line without retaining an address of a removed fragment.
         if image_format != "xbe":
-            seh_prolog, seh_epilog = (), None   # gcc code has no SEH
+            # gcc code has no SEH, and detection only knows the XBE helpers;
+            # a PE front end names its MSVC helpers explicitly.
+            seh_prolog = seh_prolog if seh_prolog is not None else ()
         elif seh_prolog is None or seh_epilog is None:
             found_prologs, found_epilog = detect_seh_helpers(
                 helper_func_db, self.xbe_data, verbose=True)
@@ -3241,9 +3244,10 @@ class BatchTranslator:
         seh_prologs = frozenset(seh_prologs)
         self.translator.lifter.SEH_PROLOGS = seh_prologs
         self.translator.lifter.SEH_PROLOG = min(seh_prologs) if seh_prologs else None
-        self.translator.lifter.SEH_EPILOG = seh_epilog
-        self.translator.lifter.SEH_HELPERS = seh_prologs | (
-            {seh_epilog} if seh_epilog is not None else set())
+        seh_epilogs = frozenset(_as_addr_set(seh_epilog))
+        self.translator.lifter.SEH_EPILOGS = seh_epilogs
+        self.translator.lifter.SEH_EPILOG = min(seh_epilogs) if seh_epilogs else None
+        self.translator.lifter.SEH_HELPERS = seh_prologs | seh_epilogs
         self.translator.lifter.SETJMP_FN = setjmp_fn
         self.translator.lifter.LONGJMP_FN = longjmp_fn
         if not coalesce_json_paths:

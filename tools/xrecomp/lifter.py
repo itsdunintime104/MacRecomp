@@ -1422,11 +1422,13 @@ class Lifter:
         # command-line override keep working.
         self.SEH_PROLOGS = frozenset(_as_addr_set(seh_prolog))
         self.SEH_PROLOG = min(self.SEH_PROLOGS) if self.SEH_PROLOGS else None
-        self.SEH_EPILOG = seh_epilog
+        # seh_epilog takes the same three forms. MSVC 8 has one per frame
+        # kind (__SEH_epilog4, __EH_epilog3, __EH_epilog3_GS).
+        self.SEH_EPILOGS = frozenset(_as_addr_set(seh_epilog))
+        self.SEH_EPILOG = min(self.SEH_EPILOGS) if self.SEH_EPILOGS else None
         # Every address whose call means "the frame pointer changed underneath
-        # this function": all the prologs, plus the epilog.
-        self.SEH_HELPERS = self.SEH_PROLOGS | (
-            {seh_epilog} if seh_epilog is not None else set())
+        # this function": all the prologs, plus the epilogs.
+        self.SEH_HELPERS = self.SEH_PROLOGS | self.SEH_EPILOGS
         self.SETJMP_FN = setjmp_fn
         self.LONGJMP_FN = longjmp_fn
         self.jump_table_targets = {}
@@ -2596,6 +2598,7 @@ class Lifter:
     SEH_PROLOGS = frozenset()
     SEH_HELPERS = frozenset()
     SEH_EPILOG = None
+    SEH_EPILOGS = frozenset()
 
     # The CRT's setjmp/longjmp, detected by detect_setjmp_helpers().
     SETJMP_FN = None
