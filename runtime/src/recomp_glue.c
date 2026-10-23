@@ -165,14 +165,15 @@ void recomp_divide_error(uint32_t va)
  * past the maximums, and every leaf not listed, read as zeros. */
 void recomp_cpuid(uint32_t leaf, uint32_t out[4])
 {
+    static const char vendor[12] = "GenuineIntel";
     static const char brand[48] = "Intel(R) Core(TM)2 Duo CPU     E8400  @ 3.00GHz";
     out[0] = out[1] = out[2] = out[3] = 0;
     switch (leaf) {
     case 0:
         out[0] = 1;              /* max basic leaf */
-        out[1] = 0x756E6547u;    /* "Genu" */
-        out[3] = 0x49656E69u;    /* "ineI" */
-        out[2] = 0x6C65746Eu;    /* "ntel" */
+        memcpy(&out[1], vendor, 4);      /* EBX EDX ECX, in that order */
+        memcpy(&out[3], vendor + 4, 4);
+        memcpy(&out[2], vendor + 8, 4);
         break;
     case 1:
         out[0] = 0x0001067Au;    /* ext model 1, family 6, model 7, stepping 10 */
