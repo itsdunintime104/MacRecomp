@@ -1731,8 +1731,9 @@ class FunctionTranslator:
                 cc = m[3:]
             elif m.startswith("cmov") and len(m) > 4:
                 cc = m[4:]
-            elif m == "lahf":
-                # lahf builds AH from the same jb probe (lifter lahf branch).
+            elif m in ("lahf", "pushfd"):
+                # lahf and pushfd build their images from the same jb probe
+                # (lifter lahf and pushfd branches).
                 cc = "b"
             if (cc in FunctionTranslator._CARRY_CC
                     and (last_setter in CF_TRACKED
@@ -2730,7 +2731,7 @@ class FunctionTranslator:
         # cmpxchg belongs here too: it snapshots the compare it performed,
         # because eax may be replaced before the branch reads the result.
         if any(insn.mnemonic in ("cmp", "test", "bsf", "bsr", "cmpxchg",
-                                 "lock cmpxchg", "inc", "dec", "sahf", "fcomi", "mul", "imul",
+                                 "lock cmpxchg", "inc", "dec", "sahf", "popfd", "fcomi", "mul", "imul",
                                  "fcomip", "fcompi", "fucomi", "fucomip", "fucompi")
                or insn.mnemonic in _RESULT_SNAPSHOT_SETTERS
                for insn in instructions):

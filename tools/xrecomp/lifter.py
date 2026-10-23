@@ -405,6 +405,9 @@ _RESULT_SNAPSHOT_SETTERS = frozenset({
 # the write because `sub eax, eax` would otherwise snapshot an operand it has
 # already destroyed.
 _RESULT_SRC_SETTERS = frozenset({"add", "sub"})
+# Setters whose _fa snapshot is the full result, so PF is its low byte's
+# parity. Only pushfd uses it; the jp family has no derivation for them.
+_PF_FROM_RESULT = frozenset({"add", "sub", "and", "or", "xor"})
 
 # `pop ebp` and `leave` restore the CALLER's ebp into the local. Publish it,
 # because a call to a function with a prologue leaves g_ebp on that callee's
@@ -446,13 +449,12 @@ _EFLAGS_SETTERS = frozenset({
 # Instructions with undefined/unpredictable flags (clear tracking)
 _FLAGS_UNDEFINED = frozenset({
     "mul", "div", "idiv",  # Flags partially undefined
-    "rdtsc", "cpuid",      # Special instructions
-    # popfd REPLACES every flag with whatever was pushed. Its flags are not
-    # architecturally undefined -- they are simply not knowable from the
-    # instruction stream -- but the tracking action is the same: whatever the
-    # last comparison left is gone, and a jcc after it must not be resolved
-    # from that comparison. It used to sit in _EFLAGS_PRESERVE, next to
-    # pushfd, which does read-and-preserve and does belong there.
+    "rdtsc",               # Special instructions
+    # popfd REPLACES every flag with whatever was pushed: whatever the last
+    # comparison left is gone, and a jcc after it must not be resolved from
+    # that comparison. It used to sit in _EFLAGS_PRESERVE, next to pushfd,
+    # which does read-and-preserve and does belong there. The instruction
+    # loop then tracks popfd itself as the setter, reading the popped image.
     "popfd",
 })
 
@@ -511,6 +513,7 @@ _EFLAGS_PRESERVE = frozenset({
     # pushfd READS the flags and leaves them alone, so it belongs here.
     # popfd does NOT -- see _FLAGS_UNDEFINED.
     "pushfd", "pushal", "pushad", "popal", "popad",
+    "cpuid",
     "sgdt", "ljmp", "sfence",
     "stmxcsr", "ldmxcsr",
     # SSE scalar float
@@ -587,6 +590,30 @@ def _has_xmm_operand(ops):
                for op in (ops or ()))
 
 
+def _pushfd_flags(flag_setter, flag_ops):
+    """The status-flag terms of a pushfd image, or [] when one is unknown.
+
+    Only CF/PF/ZF/SF/OF are modelled, from the conditions the jcc family
+    reads; AF reads 0. If any of the five has no derivation for the setter
+    the pushfd stays unhandled rather than pushing a guess. After popfd the
+    popped image in _fa is pushed back as it is, AF included.
+    """
+    if flag_setter == "popfd":
+        return ["_fa"]
+    parts = []
+    for jcc, bit in (("jb", 0x001), ("jp", 0x004), ("je", 0x040),
+                     ("js", 0x080), ("jo", 0x800)):
+        probe = _make_condition(jcc, flag_setter, flag_ops)
+        if probe is None and jcc == "jp" and flag_setter in _PF_FROM_RESULT:
+            # PF is the parity of the result's low byte, which these
+            # setters leave in _fa.
+            probe = ("RECOMP_PARITY8(_fa)", "")
+        if probe is None:
+            return []
+        parts.append(f"(({probe[0]}) ? 0x{bit:03X}u : 0u)")
+    return parts
+
+
 def _make_condition(jcc, flag_setter, flag_ops):
     """
     Generate a C condition expression for a jcc based on what set the flags.
@@ -650,7 +677,7 @@ def _make_condition(jcc, flag_setter, flag_ops):
 
     # ── FPU compare-to-EFLAGS and sahf: no standard operands ──
     if flag_setter in ("fcompi", "fcomip", "fucomi", "fucompi",
-                        "fucomip", "fcomi", "sahf"):
+                        "fucomip", "fcomi", "sahf", "popfd"):
         # EFLAGS must survive later x87 status changes and AH writes.
         # FCOMI clears SF/OF; SAHF loads SF from AH and preserves OF.
         cf, zf, pf = "(_fa & 1u)", "(_fa & 0x40u)", "(_fa & 4u)"
@@ -1631,7 +1658,7 @@ class Lifter:
                           "bts": f"{word} | (1u << {index})",
                           "btc": f"{word} ^ (1u << {index})"}.get(m)
                 if update:
-                    out.append(f"{word} = ({update}); /* {m} */")
+                    out.append(_st("MEM32", word_addr, f"({update})") + f" /* {m} */")
                 elif not out:
                     out.append(f"/* bt {insn.op_str}: no CF consumer */")
                 return out
@@ -1705,11 +1732,24 @@ class Lifter:
         # pushfd is lifted in the instruction loop, where the flag setter is
         # known.
         if m == "pushfd":
-            return (["PUSH32(esp, 0x202u | (g_df ? 0x400u : 0u));"]
+            return (["PUSH32(esp, 0x202u | (g_df ? 0x400u : 0u)"
+                     " | (g_eflags_id ? 0x200000u : 0u));"]
                     + self._unimplemented(insn, m, " (EFLAGS not derivable here)"))
+        # popfd loads OF DF SF ZF AF PF CF and ID. The five status flags and AF
+        # go into _fa at their EFLAGS positions, the image sahf leaves, and
+        # the instruction loop tracks popfd as their setter.
         if m == "popfd":
-            return (["{ uint32_t _efl; POP32(esp, _efl); g_df = (_efl >> 10) & 1u; }"]
-                    + self._unimplemented(insn, m, " (only DF is restored)"))
+            out = ["{ uint32_t _efl; POP32(esp, _efl); g_df = (_efl >> 10) & 1u;"
+                   " g_eflags_id = (_efl >> 21) & 1u; _fa = _efl & 0x8D5u; }"
+                   " /* popfd */"]
+            if self.needs_cf:
+                out.append("_cf = _fa & 1u;")
+            return out
+        # The guest sees a fixed CPU, not the host (recomp_cpuid in the
+        # runtime). Leaf in EAX; the subleaf in ECX selects nothing it reports.
+        if m == "cpuid":
+            return ["{ uint32_t _id[4]; recomp_cpuid(eax, _id); eax = _id[0];"
+                    " ebx = _id[1]; ecx = _id[2]; edx = _id[3]; } /* cpuid */"]
         if m in ("sete", "setne", "setb", "setae", "setbe", "seta",
                  "setl", "setge", "setle", "setg", "sets", "setns", "setp", "setnp", "setpe", "setpo",
                  "seto", "setno"):
@@ -4422,21 +4462,13 @@ def lift_basic_block(lifter, bb, flag_state=None):
             i += 1
             continue
 
-        # pushfd: build EFLAGS from the same conditions the jcc family reads.
-        # Only CF/PF/ZF/SF/OF (plus the fixed bit 1, IF, and DF) are modelled;
-        # if any of the five has no derivation for the last setter the
-        # instruction stays unhandled rather than pushing a guess.
+        # pushfd: build EFLAGS from the same conditions the jcc family reads
+        # (see _pushfd_flags), plus the fixed bit 1, IF, DF and ID.
         if curr.mnemonic == "pushfd" and last_flag_setter:
-            parts = []
-            for jcc, bit in (("jb", 0x001), ("jp", 0x004), ("je", 0x040),
-                             ("js", 0x080), ("jo", 0x800)):
-                probe = _make_condition(jcc, last_flag_setter, last_flag_ops)
-                if probe is None:
-                    parts = []
-                    break
-                parts.append(f"(({probe[0]}) ? 0x{bit:03X}u : 0u)")
+            parts = _pushfd_flags(last_flag_setter, last_flag_ops)
             if parts:
-                parts += ["(g_df ? 0x400u : 0u)", "0x202u"]
+                parts += ["(g_df ? 0x400u : 0u)",
+                          "(g_eflags_id ? 0x200000u : 0u)", "0x202u"]
                 stmts.append(f"PUSH32(esp, {' | '.join(parts)});"
                              f" /* pushfd ({last_flag_setter}) */")
                 i += 1
@@ -4550,6 +4582,12 @@ def lift_basic_block(lifter, bb, flag_state=None):
             # them in _fb. ZF/SF/PF stay undefined, which _make_condition
             # refuses for this setter.
             last_flag_setter, last_flag_ops = "mul", list(curr.operands)
+        elif curr.mnemonic == "popfd":
+            # The popped image sits in _fa, laid out as sahf's (see the popfd
+            # lift), so the same conditions read it. Before _FLAGS_UNDEFINED,
+            # which lists popfd for passes that do not read the image.
+            last_flag_setter = "popfd"
+            last_flag_ops = []
         elif curr.mnemonic in _FLAGS_UNDEFINED:
             # Flags are undefined after these - clear tracking
             last_flag_setter = None

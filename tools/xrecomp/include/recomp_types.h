@@ -223,6 +223,7 @@ typedef struct RecompThreadState {
     RecompXmm ts_xmm4, ts_xmm5, ts_xmm6, ts_xmm7;
     RecompMmx ts_mm0, ts_mm1, ts_mm2, ts_mm3;
     RecompMmx ts_mm4, ts_mm5, ts_mm6, ts_mm7;
+    int ts_eflags_id;
 } RecompThreadState;
 
 extern RECOMP_TLS RecompThreadState g_thread_state;
@@ -349,6 +350,9 @@ int recomp_guest_longjmp(uint32_t buf_va, uint32_t value);
  * memmove's overlapping case is the same instruction and the same bug.
  */
 #define g_df (g_thread_state.ts_df)
+/* EFLAGS.ID (bit 21). Nothing reads it but pushfd: the MSVC CRT asks "is
+ * cpuid there" by flipping it with popfd and reading it back. */
+#define g_eflags_id (g_thread_state.ts_eflags_id)
 #define RECOMP_DF_STEP(n) (g_df ? -(int32_t)(n) : (int32_t)(n))
 
 /* x87 control and status. Thread-local for the same reason the x87 stack
@@ -2088,5 +2092,10 @@ void recomp_unimpl(const char *text, uint32_t va);
 /* x86 raises #DE for a zero divisor or a quotient that does not fit; the
  * lifted div/idiv call this instead of dividing. Logs and aborts. */
 void recomp_divide_error(uint32_t va);
+
+/* cpuid answers from a fixed profile, never the host: a Core 2 Duo E8400,
+ * with only the features whose instructions the lifter translates. leaf is
+ * EAX; out receives EAX, EBX, ECX, EDX. Implemented in recomp_glue.c. */
+void recomp_cpuid(uint32_t leaf, uint32_t out[4]);
 
 #endif /* RECOMP_TYPES_H */
