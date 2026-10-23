@@ -1658,7 +1658,7 @@ class Lifter:
                           "bts": f"{word} | (1u << {index})",
                           "btc": f"{word} ^ (1u << {index})"}.get(m)
                 if update:
-                    out.append(_st("MEM32", word_addr, f"({update})") + f" /* {m} */")
+                    out.append(f"{word} = ({update}); /* {m} */")
                 elif not out:
                     out.append(f"/* bt {insn.op_str}: no CF consumer */")
                 return out
