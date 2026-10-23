@@ -184,6 +184,25 @@ MULDIV_CASES = [
                                f"mov eax, 1\nmov dword ptr [{D}+8], 2\nje skip\nmov edx, 7\nskip:\nret", regs={"edx": 0}),
     Case("cmpxchg_clobber_jne", f"mov dword ptr [{D}+8], 5\nmov eax, 6\nmov ebx, 9\nlock cmpxchg dword ptr [{D}+8], ebx\n"
                                 f"mov eax, 5\nmov dword ptr [{D}+8], 5\njne skip\nmov edx, 7\nskip:\nret", regs={"edx": 0}),
+    # sbb/adc then a signed jcc: the high half of a 64-bit compare. Each needs OF,
+    # and the destination is overwritten before the jcc.
+    Case("sbb_hi_jg_of", "sub ecx, eax\nsbb edx, ebx\nmov edx, 0\njs neg\njg hit\nneg:\nmov edi, 7\nhit:\nret",
+         regs={"ecx": 0, "eax": 0, "edx": 0x7FFFFFFF, "ebx": 0xFFFFFFFF, "edi": 0}),
+    Case("sbb_borrow_jl", "sub ecx, eax\nsbb edx, ebx\nmov edx, 0\njl hit\nmov edi, 7\nhit:\nret",
+         regs={"ecx": 0, "eax": 1, "edx": 0x80000000, "ebx": 0, "edi": 0}),
+    Case("sbb_jge", "sub ecx, eax\nsbb edx, ebx\njge hit\nmov edi, 7\nhit:\nret",
+         regs={"ecx": 1, "eax": 2, "edx": 6, "ebx": 5, "edi": 0}),
+    Case("sbb_jle_zero", "sub ecx, eax\nsbb edx, ebx\njle hit\nmov edi, 7\nhit:\nret",
+         regs={"ecx": 1, "eax": 2, "edx": 6, "ebx": 5, "edi": 0}),
+    Case("sbb_mem_setg", f"mov dword ptr [{D}+0x10], 0x80000000\nsub ecx, eax\n"
+                         f"sbb edx, dword ptr [{D}+0x10]\nsetg bl\nsetl bh\nret",
+         regs={"ecx": 5, "eax": 3, "edx": 1}),
+    Case("sbb8_jl", "sub cl, al\nsbb dl, bl\njl hit\nmov edi, 7\nhit:\nret",
+         regs={"ecx": 0, "eax": 1, "edx": 0x80, "ebx": 0, "edi": 0}),
+    Case("adc_carry_jo", "add esi, ebp\nadc eax, ecx\nmov eax, 0\njo hit\nmov edi, 7\nhit:\nret",
+         regs={"esi": 0xFFFFFFFF, "ebp": 1, "eax": 0x7FFFFFFF, "ecx": 0, "edi": 0}),
+    Case("adc_cmovg", "add esi, ebp\nadc eax, ecx\ncmovg edx, ebx\ncmovle edi, ebx\nret",
+         regs={"esi": 0, "ebp": 0, "eax": 0x40000000, "ecx": 0x40000000}),
     # SSE2 moves between a compare and its jcc must not drop the compare.
     Case("cmp_movdqa_je", f"cmp eax, 0\nmovdqa xmm5, xmmword ptr [{D}+0x40]\nje skip\nmov edx, 7\nskip:\nret",
          regs={"eax": 0, "edx": 0}),

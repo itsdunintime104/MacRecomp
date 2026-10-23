@@ -1712,6 +1712,32 @@ class FunctionTranslator:
         "b", "nae", "c", "ae", "nb", "nc", "be", "na", "a", "nbe",
     })
 
+    _SIGNED_CC = frozenset({
+        "l", "nge", "ge", "nl", "le", "ng", "g", "nle", "o", "no",
+    })
+
+    @staticmethod
+    def _function_needs_adc_sbb_of(instructions):
+        """True when the function has adc/sbb and something that may read OF.
+
+        Only these pay for OF after adc/sbb (Lifter._adc_sbb_of), for the
+        reason _cf is declared only where read: a line per adc/sbb otherwise.
+        pushfd counts because it builds EFLAGS from the jo condition.
+        """
+        has_carry_arith = reads_of = False
+        for insn in instructions:
+            m = insn.mnemonic
+            if m in ("adc", "sbb"):
+                has_carry_arith = True
+            elif m == "pushfd":
+                reads_of = True
+            else:
+                for prefix in ("j", "set", "cmov"):
+                    if (m.startswith(prefix)
+                            and m[len(prefix):] in FunctionTranslator._SIGNED_CC):
+                        reads_of = True
+        return has_carry_arith and reads_of
+
     @staticmethod
     def _function_needs_cf(instructions):
         """True when something in the function reads CF."""
@@ -2775,6 +2801,7 @@ class FunctionTranslator:
         # corrupts multi-word arithmetic (add/adc pairs) and the shr/adc
         # idiom MSVC emits for odd trailing elements.
         self.lifter.needs_cf = has_carry
+        self.lifter.needs_of = self._function_needs_adc_sbb_of(instructions)
         self.lifter.publishes_ebp = self._func_owns_a_frame(instructions)
 
         # SSE and MMX are architectural state, declared globally by the

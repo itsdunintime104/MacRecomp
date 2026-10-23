@@ -905,6 +905,11 @@ def _make_condition(jcc, flag_setter, flag_ops):
         return None
 
     # ── adc/sbb: result-based (like add/sub but with carry) ──
+    #
+    # OF is in _fb, computed by the lift from the operands before the write
+    # (Lifter._adc_sbb_of). The lift emits it only when the function has a
+    # signed consumer, which is exactly when these conditions are asked for:
+    # the high half of a 64-bit compare, `sub lo; sbb hi; js; jg`.
     if flag_setter in ("adc", "sbb"):
         if jcc in ("je", "jz"):
             return f"({lhs} == 0)", desc
@@ -914,6 +919,13 @@ def _make_condition(jcc, flag_setter, flag_ops):
             return f"({slhs} < 0)", desc
         if jcc == "jns":
             return f"({slhs} >= 0)", desc
+        less = "((_fas < 0) != (_fb != 0))"
+        signed = {"jl": less, "jnge": less, "jge": f"!{less}", "jnl": f"!{less}",
+                  "jle": f"({less} || _fa == 0)", "jng": f"({less} || _fa == 0)",
+                  "jg": f"(!{less} && _fa != 0)", "jnle": f"(!{less} && _fa != 0)",
+                  "jo": "(_fb != 0)", "jno": "(_fb == 0)"}
+        if jcc in signed:
+            return signed[jcc], desc
         return None
 
     # ── and/or/xor: result-based, CF=0, OF=0 ──
@@ -1390,6 +1402,7 @@ class Lifter:
         self.func_start = 0  # Set per-function by translator
         self.func_end = 0
         self.needs_cf = False  # Set per-function by translator (has adc/sbb)
+        self.needs_of = False  # Set per-function: adc/sbb with a signed consumer
         self.publishes_ebp = False  # Set per-function: has a real frame
         self.trace_exit_name = None  # Set per-function when traced
         self.force_return_value = None   # Set per-function by --force-return
@@ -2182,14 +2195,36 @@ class Lifter:
         src = _fmt_operand_read(ops[1])
         # sbb reg, reg is a common idiom: result is 0 or 0xFFFFFFFF depending on CF
         if ops[0].type == "reg" and ops[1].type == "reg" and ops[0].reg == ops[1].reg:
-            return [_fmt_operand_write(ops[0], "_cf ? 0xFFFFFFFF : 0")
-                    + " /* sbb self (CF extend) */",
-                    self._result_snapshot(ops, "sbb")]
+            out = [_fmt_operand_write(ops[0], "_cf ? 0xFFFFFFFF : 0")
+                   + " /* sbb self (CF extend) */",
+                   self._result_snapshot(ops, "sbb")]
+            if self.needs_of:
+                out.append("_fb = 0; /* sbb self: OF = 0 */")
+            return out
         w = (_operand_width(ops[0]) or 4) * 8
+        if self.needs_of:
+            return self._adc_sbb_of(ops, "sbb", dst, src, w)
         return ["{ uint64_t _t = (uint64_t)(%s) - (uint64_t)(%s) - (uint64_t)_cf;"
                 " _cf = (int)((_t >> %d) & 1); %s }  /* sbb */"
                 % (dst, src, w, _fmt_operand_write(ops[0], "(uint32_t)_t")),
                 self._result_snapshot(ops, "sbb")]
+
+    def _adc_sbb_of(self, ops, m, dst, src, w):
+        """adc/sbb that also publish OF into _fb, for a signed jcc after them.
+
+        dst and src are read once, before the write, so `sbb ecx, [ecx]` and
+        a destination overwritten before the jcc both give the hardware's OF:
+        the sign bit of (d ^ s) & (d ^ r) for sbb, ~(d ^ s) & (d ^ r) for adc,
+        with the carry or borrow already in r.
+        """
+        op, inv = ("-", "") if m == "sbb" else ("+", "~")
+        return ["{ uint32_t _d = (uint32_t)(%s), _s = (uint32_t)(%s);"
+                " uint64_t _t = (uint64_t)_d %s (uint64_t)_s %s (uint64_t)_cf;"
+                " _cf = (int)((_t >> %d) & 1); %s"
+                " _fb = ((%s(_d ^ _s) & (_d ^ (uint32_t)_t)) >> %d) & 1u; }  /* %s, OF in _fb */"
+                % (dst, src, op, op, w, _fmt_operand_write(ops[0], "(uint32_t)_t"),
+                   inv, w - 1, m),
+                self._result_snapshot(ops, m)]
 
     def _lift_adc(self, insn, ops):
         """ADC: add with carry."""
@@ -2198,6 +2233,8 @@ class Lifter:
         dst = _fmt_operand_read(ops[0])
         src = _fmt_operand_read(ops[1])
         w = (_operand_width(ops[0]) or 4) * 8
+        if self.needs_of:
+            return self._adc_sbb_of(ops, "adc", dst, src, w)
         return ["{ uint64_t _t = (uint64_t)(%s) + (uint64_t)(%s) + (uint64_t)_cf;"
                 " _cf = (int)((_t >> %d) & 1); %s }  /* adc */"
                 % (dst, src, w, _fmt_operand_write(ops[0], "(uint32_t)_t")),
