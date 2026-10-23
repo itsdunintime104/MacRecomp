@@ -2310,7 +2310,8 @@ class FunctionTranslator:
                 continue
             operand = insn.operands[0]
             if jump_table_targets is None:
-                targets = self.lifter._analyze_switch_table(insn.operands)
+                targets = self.lifter._analyze_switch_table(
+                    insn.operands, insn.address)
             else:
                 targets = jump_table_targets.get(operand.mem_disp, ())
             local = {target for target in targets if start <= target < end}
@@ -2413,6 +2414,7 @@ class FunctionTranslator:
                         self.disasm.disassemble_function(raw_bytes, start, end))
         if not instructions:
             return [], []
+        self.lifter.func_instructions = instructions
         authoritative_jump_tables = self._authoritative_jump_tables(
             instructions, validated_jump_tables)
         self.lifter.jump_table_targets = (
@@ -2441,6 +2443,7 @@ class FunctionTranslator:
                     raw_bytes, start, end, resync=resync)
                 if not instructions:
                     return [], []
+                self.lifter.func_instructions = instructions
                 (imm_refs, computed_jump_edges, debug_slide_int3s,
                  debug_slide_bypasses,
                  switch_leaders) = self._control_flow_census(
@@ -2957,7 +2960,8 @@ class FunctionTranslator:
         unseen_entries = set(self.lifter.imm_code_refs)
         for insn in instructions:
             if insn.mnemonic == "jmp" and not insn.jump_target and insn.operands:
-                unseen_entries.update(self.lifter._analyze_switch_table(insn.operands))
+                unseen_entries.update(self.lifter._analyze_switch_table(
+                    insn.operands, insn.address))
         edge_vars, edge_sets, block_lines = [], [], {}
 
         for bb in blocks:
