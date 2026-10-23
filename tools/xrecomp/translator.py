@@ -63,12 +63,44 @@ def _merge_flag_states(states):
     if first[0] in ("cmp", "test") and len(first[1]) == 2:
         width = _operand_width(first[1][0]) or _operand_width(first[1][1])
         for kind, ops in states[1:]:
-            if kind != first[0] or len(ops) != 2:
+            if len(ops) != 2:
                 return None
             if (_operand_width(ops[0]) or _operand_width(ops[1])) != width:
                 return None
+            if kind != first[0]:
+                return _merge_zero_cmp_and_test(states, width)
         return first
     return _merge_zero_flag(states)
+
+
+def _merge_zero_cmp_and_test(states, width):
+    """Join `cmp X, 0` edges with `test m, imm` edges.
+
+    normalise_zero_test turns `test ecx, ecx` into `cmp ecx, 0`, so a block
+    reached by it and by `test dword [eax+0x84], 0x100` (LEGO Harry Potter
+    sub_00459500) saw two operations and inherited nothing. `cmp X, 0` is
+    `test X, all-ones`: same ZF/SF/PF, CF = OF = 0. The cmp edge snapshots
+    _fb = 0 and a test edge with a non-zero immediate snapshots _fb != 0, so
+    the "__test_or_zero" state reads its mask as `_fb ? _fb : all-ones`.
+    """
+    if not width:
+        return None
+    mask = (1 << (8 * width)) - 1
+    kinds = set()
+    for kind, ops in states:
+        if (len(ops) != 2 or ops[1].type != "imm"
+                or (_operand_width(ops[0]) or _operand_width(ops[1])) != width):
+            return None
+        if kind == "cmp" and ops[1].imm & mask == 0:
+            kinds.add(kind)
+        elif kind == "test" and ops[1].imm & mask:
+            kinds.add(kind)
+        else:
+            return None
+    if kinds != {"cmp", "test"}:
+        return None
+    return ("__test_or_zero",
+            next(list(ops) for kind, ops in states if kind == "test"))
 
 
 def _merge_zero_flag(states):

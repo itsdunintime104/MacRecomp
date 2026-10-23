@@ -203,6 +203,19 @@ MULDIV_CASES = [
          regs={"esi": 0xFFFFFFFF, "ebp": 1, "eax": 0x7FFFFFFF, "ecx": 0, "edi": 0}),
     Case("adc_cmovg", "add esi, ebp\nadc eax, ecx\ncmovg edx, ebx\ncmovle edi, ebx\nret",
          regs={"esi": 0, "ebp": 0, "eax": 0x40000000, "ecx": 0x40000000}),
+    # A join of `test ecx, ecx` (lifted as cmp ecx, 0) and `test [m], imm`. The
+    # x87 pop at the join, as in LEGO Harry Potter sub_00459500, keeps the
+    # per-edge flag variable out, so the join must merge the two states.
+    *[Case(f"join_zero_test_{name}",
+           f"fld1\ncmp eax, 1\nje other\ntest ecx, ecx\njoin:\nfstp st(0)\n{jcc} skip\nmov edx, 7\n"
+           f"skip:\nret\nother:\nmov dword ptr [{D}+0x84], {mem}\n"
+           f"test dword ptr [{D}+0x84], 0x80000100\njmp join",
+           regs={"eax": eax, "ecx": ecx, "edx": 0})
+      for name, jcc, eax, ecx, mem in (
+          ("cmp_zero", "jne", 0, 0, 0), ("cmp_set", "jne", 0, 3, 0),
+          ("test_set", "jne", 1, 0, 0x100), ("test_clear", "jne", 1, 3, 0xFF),
+          ("cmp_neg_jle", "jle", 0, 0x80000000, 0), ("cmp_pos_jg", "jg", 0, 9, 0),
+          ("test_sign_js", "js", 1, 0, 0x80000000))],
     # SSE2 moves between a compare and its jcc must not drop the compare.
     Case("cmp_movdqa_je", f"cmp eax, 0\nmovdqa xmm5, xmmword ptr [{D}+0x40]\nje skip\nmov edx, 7\nskip:\nret",
          regs={"eax": 0, "edx": 0}),

@@ -615,6 +615,13 @@ def _make_condition(jcc, flag_setter, flag_ops):
             return f"({dest} != 0)", desc
         return None
 
+    # A join of `cmp X, 0` and `test m, imm` edges (translator
+    # _merge_zero_cmp_and_test): a test whose mask is all-ones on the cmp
+    # edge, where the snapshot left _fb = 0.
+    zero_or_test = flag_setter == "__test_or_zero"
+    if zero_or_test:
+        flag_setter = "test"
+
     # A cmp/test that is not fused with its jcc snapshots its operands into
     # _fa/_fb (zero-extended) and _fas/_fbs (sign-extended) at the point the
     # comparison happens. Use those rather than re-reading registers that may
@@ -623,6 +630,8 @@ def _make_condition(jcc, flag_setter, flag_ops):
     if flag_setter in ("cmp", "test", "bsf", "bsr") and len(flag_ops) >= 2:
         signed = (cmp_macro in SIGNED) or (test_macro in SIGNED)
         lhs, rhs = ("_fas", "_fbs") if signed else ("_fa", "_fb")
+        if zero_or_test:
+            rhs = f"({rhs} ? {rhs} : {'-1' if signed else '0xFFFFFFFFu'})"
     elif flag_setter in _RESULT_SNAPSHOT_SETTERS and flag_ops:
         # Same reason as the cmp/test snapshot above, for the family that
         # WRITES its destination rather than only reading it.
