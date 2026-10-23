@@ -1036,6 +1036,75 @@ static inline RecompXmm XMM_CVT_PD2PS(RecompXmm a) {
     return r;
 }
 
+/* The lane arithmetic below is IEEE double, round to nearest, on x86 and
+ * arm64 alike; the NaN a lane produces is not. x86 returns the first source
+ * that is a NaN, quieted, the destination operand first. arm64 prefers a
+ * signalling NaN in either operand, and its default NaN (inf - inf, 0 * inf)
+ * is positive where x86's has the sign bit set. recomp_pd_lane applies the
+ * x86 rule (Intel SDM vol. 1, table 4-7) to the arm64 result. */
+static inline uint64_t recomp_pd_lane(uint64_t a, uint64_t b, double v) {
+    union { double d; uint64_t q; } r;
+    r.d = v;
+    if (v == v) return r.q;
+    if ((a & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull)
+        return a | 0x0008000000000000ull;
+    if ((b & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull)
+        return b | 0x0008000000000000ull;
+    return 0xFFF8000000000000ull;
+}
+
+/** subpd: two doubles subtracted lane-wise, x86 NaN rule. */
+static inline RecompXmm XMM_SUBPD(RecompXmm a, RecompXmm b) {
+    RecompXmm r; int i;
+    for (i = 0; i < 2; ++i)
+        r.q[i] = recomp_pd_lane(a.q[i], b.q[i], a.d[i] - b.d[i]);
+    return r;
+}
+
+/** mulpd: two doubles multiplied lane-wise, x86 NaN rule. */
+static inline RecompXmm XMM_MULPD(RecompXmm a, RecompXmm b) {
+    RecompXmm r; int i;
+    for (i = 0; i < 2; ++i)
+        r.q[i] = recomp_pd_lane(a.q[i], b.q[i], a.d[i] * b.d[i]);
+    return r;
+}
+
+/** shufpd: the low double out of `a` by imm bit 0, the high out of `b` by
+ * bit 1. */
+static inline RecompXmm XMM_SHUFPD(RecompXmm a, RecompXmm b, uint32_t imm) {
+    RecompXmm r;
+    r.q[0] = a.q[imm & 1u]; r.q[1] = b.q[(imm >> 1) & 1u];
+    return r;
+}
+
+/* CMPPD/CMPSD: the eight predicates of recomp_cmp_pred, over doubles. A
+ * true lane is all ones, 64 bits wide. */
+static inline int recomp_cmp_pred_d(double a, double b, int p) {
+    switch (p & 7) {
+    case 0:  return a == b;
+    case 1:  return a < b;
+    case 2:  return a <= b;
+    case 3:  return a != a || b != b;
+    case 4:  return !(a == b);
+    case 5:  return !(a < b);
+    case 6:  return !(a <= b);
+    default: return !(a != a || b != b);
+    }
+}
+static inline RecompXmm XMM_CMP_PRED_PD(RecompXmm a, RecompXmm b, int p) {
+    RecompXmm r; int i;
+    for (i = 0; i < 2; ++i)
+        r.q[i] = recomp_cmp_pred_d(a.d[i], b.d[i], p) ? ~0ull : 0ull;
+    return r;
+}
+
+/** pmovmskb r32, xmm: the sixteen byte sign bits; bits 16-31 zero. */
+static inline uint32_t XMM_PMOVMSKB(RecompXmm a) {
+    uint32_t m = 0; int i;
+    for (i = 0; i < 16; i++) if (a.b[i] & 0x80) m |= (1u << i);
+    return m;
+}
+
 #define RECOMP_XMM_INT(name, field, n, expr)                              \
     static inline RecompXmm name(RecompXmm a, RecompXmm b) {              \
         RecompXmm r; int i;                                               \
@@ -1057,6 +1126,7 @@ RECOMP_XMM_INT(XMM_PCMPEQD, u, 4,  a.u[i] == b.u[i] ? 0xFFFFFFFFu : 0u)
 RECOMP_XMM_INT(XMM_PCMPGTB, b, 16, (uint8_t)(a.sb[i] > b.sb[i] ? 0xFFu : 0u))
 RECOMP_XMM_INT(XMM_PCMPGTW, w, 8,  (uint16_t)(a.sw[i] > b.sw[i] ? 0xFFFFu : 0u))
 RECOMP_XMM_INT(XMM_PCMPGTD, u, 4,  a.i[i] > b.i[i] ? 0xFFFFFFFFu : 0u)
+RECOMP_XMM_INT(XMM_PMAXSW, w, 8,  (uint16_t)(a.sw[i] > b.sw[i] ? a.sw[i] : b.sw[i]))
 
 /* punpckl*: interleave the low halves (dst lane first); punpckh*: the high
  * halves. off is the first source lane. */

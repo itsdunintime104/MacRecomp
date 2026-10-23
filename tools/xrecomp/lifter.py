@@ -462,7 +462,7 @@ _FLAGS_UNDEFINED = frozenset({
 _SSE_CMP_PRED = {"eq": 0, "lt": 1, "le": 2, "unord": 3,
                  "neq": 4, "nlt": 5, "nle": 6, "ord": 7}
 _SSE_CMP_NAMED = {f"cmp{p}{w}": (n, w) for p, n in _SSE_CMP_PRED.items()
-                  for w in ("ps", "ss")}
+                  for w in ("ps", "ss", "pd", "sd")}
 # SSE2 packed-integer two-operand ops: mnemonic -> recomp_types.h helper
 # taking (dst, src) and returning the new dst. pand/pandn/por/pxor reuse the
 # float-register bitwise helpers, which are the same 128-bit operation.
@@ -482,6 +482,7 @@ _SSE2_INT_BINARY = {
     "packssdw": "XMM_PACKSSDW",
     "pand": "XMM_AND", "pandn": "XMM_ANDN", "por": "XMM_OR",
     "pxor": "XMM_XOR", "pcmpgtd": "XMM_PCMPGTD",
+    "pmaxsw": "XMM_PMAXSW",
 }
 # Shifts take (dst, count): an imm8 or the low qword of an xmm/m128.
 _SSE2_SHIFT = {
@@ -541,6 +542,7 @@ _EFLAGS_PRESERVE = frozenset({
     "movdqa", "movdqu", "movlpd", "movhpd", "maskmovdqu",
     "pmuludq", "psubq", "pslldq", "psrldq",
     "xorpd", "andpd", "orpd", "andnpd",
+    "unpcklpd", "unpckhpd", "shufpd",
     "cvtdq2ps", "cvtdq2pd", "cvtps2pd", "cvtpd2ps",
     # SSE/MMX integer
     "movd", "movq", "movntq",
@@ -1771,6 +1773,8 @@ class Lifter:
                  "pshufd", "pinsrw", "pextrw",
                  "pslldq", "psrldq", "pmuludq", "cvtdq2ps", "cvtdq2pd",
                  "pshuflw", "movlpd", "cvtps2pd", "addpd", "cvtpd2ps",
+                 "subpd", "mulpd", "andpd", "orpd", "andnpd",
+                 "unpcklpd", "unpckhpd", "shufpd", "pmovmskb",
                  "packuswb", "packsswb", "packssdw")                 or m in _SSE_CMP_NAMED \
                 or m in _SSE2_INT_BINARY or m in _SSE2_SHIFT:
             return self._lift_sse(insn, m, ops)
@@ -3706,9 +3710,10 @@ class Lifter:
             if lifted is not None:
                 return lifted
             return [f"/* {m} {insn.op_str} */"]
-        if m in ("andps", "orps", "andnps"):
+        if m in ("andps", "orps", "andnps", "andpd", "orpd", "andnpd"):
             helper = {"andps": "XMM_AND", "orps": "XMM_OR",
-                      "andnps": "XMM_ANDN"}[m]
+                      "andnps": "XMM_ANDN", "andpd": "XMM_AND",
+                      "orpd": "XMM_OR", "andnpd": "XMM_ANDN"}[m]
             lifted = _packed_binary(helper)
             if lifted is not None:
                 return lifted
@@ -3772,12 +3777,16 @@ class Lifter:
                 pred, width = ops[2].imm & 7, m[-2:]
             if nops < 2 or not _is_xmm(ops[0]):
                 return [f"/* {m} {insn.op_str} */"]
-            if width == "ps":
+            if width in ("ps", "pd"):
                 b = _packed_read(ops[1])
                 if b is None:
                     return [f"/* {m} {insn.op_str} */"]
-                return [_packed_write(ops[0], f"XMM_CMP_PRED({ops[0].reg}, {b}, {pred})")
+                helper = "XMM_CMP_PRED" if width == "ps" else "XMM_CMP_PRED_PD"
+                return [_packed_write(ops[0], f"{helper}({ops[0].reg}, {b}, {pred})")
                         + f" /* {m} */"]
+            if width == "sd":
+                return [f"{ops[0].reg}.q[0] = recomp_cmp_pred_d({ops[0].reg}.d[0], "
+                        f"{_sse_read(ops[1])}, {pred}) ? ~0ull : 0ull; /* {m} */"]
             return [f"{ops[0].reg}.u[0] = recomp_cmp_pred({ops[0].reg}.f[0], "
                     f"{_sse_read(ops[1])}, {pred}) ? 0xFFFFFFFFu : 0u; /* {m} */"]
 
@@ -3861,12 +3870,27 @@ class Lifter:
             b = _packed_read(ops[1])
             if b is not None:
                 return [f"{ops[0].reg} = XMM_CVT_PD2PS({b}); /* {m} */"]
-        if m == "addpd" and nops >= 2 and _is_xmm(ops[0]):
-            lifted = _packed_binary("XMM_ADDPD")
+        if m in ("addpd", "subpd", "mulpd", "unpcklpd", "unpckhpd") \
+                and nops >= 2 and _is_xmm(ops[0]):
+            # unpck[lh]pd are punpck[lh]qdq: the same qword interleave.
+            lifted = _packed_binary({
+                "addpd": "XMM_ADDPD", "subpd": "XMM_SUBPD", "mulpd": "XMM_MULPD",
+                "unpcklpd": "XMM_PUNPCKLQDQ", "unpckhpd": "XMM_PUNPCKHQDQ"}[m])
             if lifted is not None:
                 return lifted
+        if m == "shufpd" and nops >= 3 and ops[2].type == "imm" \
+                and _is_xmm(ops[0]):
+            b = _packed_read(ops[1])
+            if b is not None:
+                return [f"{ops[0].reg} = XMM_SHUFPD({ops[0].reg}, {b}, "
+                        f"{ops[2].imm & 0xFF}u); /* {m} */"]
+        if m == "pmovmskb" and nops >= 2 and _is_xmm(ops[1]) \
+                and ops[0].type == "reg":
+            return [_fmt_operand_write(ops[0], f"XMM_PMOVMSKB({ops[1].reg})")
+                    + f" /* {m} */"]
         if m in ("pinsrw", "pextrw", "pshufd", "pshuflw", "pslldq", "psrldq",
-                 "cvtdq2ps", "cvtdq2pd", "cvtps2pd", "cvtpd2ps", "addpd") \
+                 "cvtdq2ps", "cvtdq2pd", "cvtps2pd", "cvtpd2ps", "addpd",
+                 "subpd", "mulpd", "unpcklpd", "unpckhpd", "shufpd", "pmovmskb") \
                 or m in _SSE2_SHIFT or m in _SSE2_INT_BINARY:
             return self._unimplemented(insn, m)
 
