@@ -153,6 +153,10 @@ MULDIV_CASES = [
                              f"mov dword ptr [{D}+4], 0\njb hit\nmov edx, 7\nhit:\nret",
          regs={"eax": 36, "edx": 0}),
     Case("bts_setc", "mov ecx, 0x10\nbts ecx, eax\nsetc dl\nret", regs={"eax": 4, "edx": 0}),
+    # Memory base, register offset: the store goes through the ordered accessor.
+    Case("bts_mem_reg", f"mov dword ptr [{D}+4], 0x10\nbts dword ptr [{D}], eax\nsetc dl\n"
+                        f"btr dword ptr [{D}], ecx\nbtc dword ptr [{D}+8], ebx\nret",
+         regs={"eax": 36, "ecx": 3, "ebx": 70, "edx": 0}),
     # Flag setters other than bt: the operand is overwritten before the jcc. The
     # overwrite is chosen so a lift that re-reads the operand takes the other branch.
     Case("inc_clobber_je", "mov ecx, -1\ninc ecx\nmov ecx, 5\nje skip\nmov edx, 7\nskip:\nret", regs={"edx": 0}),
