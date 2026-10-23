@@ -622,6 +622,16 @@ def _make_condition(jcc, flag_setter, flag_ops):
     if zero_or_test:
         flag_setter = "test"
 
+    # A function entered with ZF from its callers (translator entry_zf): the
+    # entry snapshot holds (reg & mask) in _fa and the value in _fb. Only ZF
+    # is part of that contract.
+    if flag_setter == "__entry_zf":
+        if jcc in ("je", "jz"):
+            return "(_fa == _fb)", desc
+        if jcc in ("jne", "jnz"):
+            return "(_fa != _fb)", desc
+        return None
+
     # A cmp/test that is not fused with its jcc snapshots its operands into
     # _fa/_fb (zero-extended) and _fas/_fbs (sign-extended) at the point the
     # comparison happens. Use those rather than re-reading registers that may

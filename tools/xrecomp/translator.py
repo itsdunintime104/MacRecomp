@@ -473,6 +473,10 @@ def load_label_db(labels_json_path):
 class FunctionTranslator:
     """Translates individual x86 functions to C source code."""
 
+    # Per-game: {entry VA: (reg, mask, value)} for functions whose entry block
+    # reads ZF set by every caller to ((reg & mask) == value). See --entry-zf.
+    entry_zf: dict[int, tuple[str, int, int]] = {}
+
     STRONG_ENTRY_METHODS = frozenset({
         "entry_point", "call_target", "indirect_call_slot",
         "seed_vtable_thunk", "static_indirect_table",
@@ -2794,7 +2798,7 @@ class FunctionTranslator:
                                  "lock cmpxchg", "inc", "dec", "sahf", "fcomi", "mul", "imul",
                                  "fcomip", "fcompi", "fucomi", "fucomip", "fucompi")
                or insn.mnemonic in _RESULT_SNAPSHOT_SETTERS
-               for insn in instructions):
+               for insn in instructions) or start in self.entry_zf:
             lines.append("    uint32_t _fa = 0, _fb = 0;")
             lines.append("    int32_t _fas = 0, _fbs = 0;")
             lines.append("    (void)_fa; (void)_fb; (void)_fas; (void)_fbs;")
@@ -2966,6 +2970,22 @@ class FunctionTranslator:
         # settled_state onto the dict that pass fills is what makes the two
         # cases one loop: it then reads exactly the states it has computed
         # itself, which is what this function did before the probe existed.
+        # A function entered with ZF already set by its callers (entry_zf): the
+        # entry block starts from that compare, snapshotted on entry. Only
+        # when nothing inside the function jumps back to the entry, or the
+        # snapshot would be stale on the second visit.
+        entry_state = None
+        if start in self.entry_zf and not preds[start]:
+            reg, mask, value = self.entry_zf[start]
+            lines.append(f"    _fa = {reg} & 0x{mask:X}u; _fb = 0x{value:X}u;"
+                         " /* entry ZF: set by every caller */")
+            entry_state = ("__entry_zf", [])
+
+        def block_incoming(bb, known):
+            if bb.start == start:
+                return entry_state
+            return _incoming_flag_state(preds[bb.start], known, False)
+
         out_state = {}
         settled_state = out_state
         if any(p >= bb.start for bb in blocks for p in preds[bb.start]):
@@ -2975,8 +2995,7 @@ class FunctionTranslator:
             for _ in range(3):
                 changed = False
                 for bb in blocks:
-                    incoming = _incoming_flag_state(
-                        preds[bb.start], out_state, bb.start == start)
+                    incoming = block_incoming(bb, out_state)
                     _, new_out = lift_basic_block(
                         self.lifter, bb, flag_state=incoming)
                     if out_state.get(bb.start) != new_out:
@@ -3011,8 +3030,7 @@ class FunctionTranslator:
             # states come from the pre-pass above, so a back edge's
             # predecessor is known here even though it sits later in address
             # order.
-            incoming = _incoming_flag_state(preds[bb.start], settled_state,
-                                            bb.start == start)
+            incoming = block_incoming(bb, settled_state)
 
             stmts, out_state[bb.start] = lift_basic_block(
                 self.lifter, bb, flag_state=incoming)
