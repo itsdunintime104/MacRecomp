@@ -91,6 +91,24 @@ def parse_vas(text: str | None) -> frozenset[int] | None:
     return frozenset(int(a, 16) for a in text.split(",") if a.strip())
 
 
+_GPRS = frozenset({"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"})
+
+
+def read_entry_zf(path: Path) -> dict[int, tuple[str, int, int]]:
+    """{entry VA: (reg, mask, value)} from {"0xVA": {"reg", "mask", "value"}}.
+
+    Masks and values may be ints or hex strings."""
+    out: dict[int, tuple[str, int, int]] = {}
+    for va, spec in json.loads(path.read_text()).items():
+        reg = spec["reg"]
+        if reg not in _GPRS:
+            raise ValueError(f"{path}: {va}: reg {reg!r} is not a 32-bit GPR")
+        mask, value = (int(v, 0) if isinstance(v, str) else int(v)
+                       for v in (spec["mask"], spec["value"]))
+        out[int(va, 16)] = (reg, mask, value)
+    return out
+
+
 # Set in the parent before the pool forks; the workers inherit it, so the
 # translator (minutes to build) is built once and never pickled.
 _shared_bt: BatchTranslator | None = None
@@ -163,6 +181,10 @@ def main() -> int:
                     help="output file prefix: <prefix>_NNNN.c")
     ap.add_argument("--overrides", type=Path, default=None,
                     help="file of hex VAs the runtime replaces natively")
+    ap.add_argument("--entry-zf", type=Path, default=None,
+                    help="JSON {entry VA: {reg, mask, value}}: functions whose "
+                         "entry block reads ZF = ((reg & mask) == value), as "
+                         "every caller leaves it")
     ap.add_argument("--sample", type=int, default=0)
     ap.add_argument("--only", default=None,
                     help="comma-separated hex addresses to lift (debug); "
@@ -188,6 +210,8 @@ def main() -> int:
                prefix=args.prefix, native_overrides=overrides,
                seh_prolog=parse_vas(args.seh_prolog),
                seh_epilog=parse_vas(args.seh_epilog))
+    if args.entry_zf:
+        bt.translator.entry_zf = read_entry_zf(args.entry_zf)
     func_list = sorted(bt.func_db.items())
     shards = (translate_parallel(bt, func_list, args.jobs)
               if args.jobs > 1 else None)

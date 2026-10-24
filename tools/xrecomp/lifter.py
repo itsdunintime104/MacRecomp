@@ -644,6 +644,23 @@ def _make_condition(jcc, flag_setter, flag_ops):
             return f"({dest} != 0)", desc
         return None
 
+    # A join of `cmp X, 0` and `test m, imm` edges (translator
+    # _merge_zero_cmp_and_test): a test whose mask is all-ones on the cmp
+    # edge, where the snapshot left _fb = 0.
+    zero_or_test = flag_setter == "__test_or_zero"
+    if zero_or_test:
+        flag_setter = "test"
+
+    # A function entered with ZF from its callers (translator entry_zf): the
+    # entry snapshot holds (reg & mask) in _fa and the value in _fb. Only ZF
+    # is part of that contract.
+    if flag_setter == "__entry_zf":
+        if jcc in ("je", "jz"):
+            return "(_fa == _fb)", desc
+        if jcc in ("jne", "jnz"):
+            return "(_fa != _fb)", desc
+        return None
+
     # A cmp/test that is not fused with its jcc snapshots its operands into
     # _fa/_fb (zero-extended) and _fas/_fbs (sign-extended) at the point the
     # comparison happens. Use those rather than re-reading registers that may
@@ -652,6 +669,8 @@ def _make_condition(jcc, flag_setter, flag_ops):
     if flag_setter in ("cmp", "test", "bsf", "bsr") and len(flag_ops) >= 2:
         signed = (cmp_macro in SIGNED) or (test_macro in SIGNED)
         lhs, rhs = ("_fas", "_fbs") if signed else ("_fa", "_fb")
+        if zero_or_test:
+            rhs = f"({rhs} ? {rhs} : {'-1' if signed else '0xFFFFFFFFu'})"
     elif flag_setter in _RESULT_SNAPSHOT_SETTERS and flag_ops:
         # Same reason as the cmp/test snapshot above, for the family that
         # WRITES its destination rather than only reading it.
@@ -934,6 +953,11 @@ def _make_condition(jcc, flag_setter, flag_ops):
         return None
 
     # ── adc/sbb: result-based (like add/sub but with carry) ──
+    #
+    # OF is in _fb, computed by the lift from the operands before the write
+    # (Lifter._adc_sbb_of). The lift emits it only when the function has a
+    # signed consumer, which is exactly when these conditions are asked for:
+    # the high half of a 64-bit compare, `sub lo; sbb hi; js; jg`.
     if flag_setter in ("adc", "sbb"):
         if jcc in ("je", "jz"):
             return f"({lhs} == 0)", desc
@@ -943,6 +967,13 @@ def _make_condition(jcc, flag_setter, flag_ops):
             return f"({slhs} < 0)", desc
         if jcc == "jns":
             return f"({slhs} >= 0)", desc
+        less = "((_fas < 0) != (_fb != 0))"
+        signed = {"jl": less, "jnge": less, "jge": f"!{less}", "jnl": f"!{less}",
+                  "jle": f"({less} || _fa == 0)", "jng": f"({less} || _fa == 0)",
+                  "jg": f"(!{less} && _fa != 0)", "jnle": f"(!{less} && _fa != 0)",
+                  "jo": "(_fb != 0)", "jno": "(_fb == 0)"}
+        if jcc in signed:
+            return signed[jcc], desc
         return None
 
     # ── and/or/xor: result-based, CF=0, OF=0 ──
@@ -1419,6 +1450,7 @@ class Lifter:
         self.func_start = 0  # Set per-function by translator
         self.func_end = 0
         self.needs_cf = False  # Set per-function by translator (has adc/sbb)
+        self.needs_of = False  # Set per-function: adc/sbb with a signed consumer
         self.publishes_ebp = False  # Set per-function: has a real frame
         self.trace_exit_name = None  # Set per-function when traced
         self.force_return_value = None   # Set per-function by --force-return
@@ -1461,6 +1493,9 @@ class Lifter:
         self.SETJMP_FN = setjmp_fn
         self.LONGJMP_FN = longjmp_fn
         self.jump_table_targets = {}
+        # The current function's decoded instructions, set by the translator,
+        # so a switch can check the bound and byte map before its jmp.
+        self.func_instructions = []
         # call-site VA -> targets the title was measured reaching from it
         # (tools/recomp/output/icall_sites.json). A site whose whole recorded
         # set is small and translated is guarded with direct calls; the
@@ -1660,7 +1695,7 @@ class Lifter:
                           "bts": f"{word} | (1u << {index})",
                           "btc": f"{word} ^ (1u << {index})"}.get(m)
                 if update:
-                    out.append(f"{word} = ({update}); /* {m} */")
+                    out.append(_st("MEM32", word_addr, f"({update})") + f" /* {m} */")
                 elif not out:
                     out.append(f"/* bt {insn.op_str}: no CF consumer */")
                 return out
@@ -2228,14 +2263,36 @@ class Lifter:
         src = _fmt_operand_read(ops[1])
         # sbb reg, reg is a common idiom: result is 0 or 0xFFFFFFFF depending on CF
         if ops[0].type == "reg" and ops[1].type == "reg" and ops[0].reg == ops[1].reg:
-            return [_fmt_operand_write(ops[0], "_cf ? 0xFFFFFFFF : 0")
-                    + " /* sbb self (CF extend) */",
-                    self._result_snapshot(ops, "sbb")]
+            out = [_fmt_operand_write(ops[0], "_cf ? 0xFFFFFFFF : 0")
+                   + " /* sbb self (CF extend) */",
+                   self._result_snapshot(ops, "sbb")]
+            if self.needs_of:
+                out.append("_fb = 0; /* sbb self: OF = 0 */")
+            return out
         w = (_operand_width(ops[0]) or 4) * 8
+        if self.needs_of:
+            return self._adc_sbb_of(ops, "sbb", dst, src, w)
         return ["{ uint64_t _t = (uint64_t)(%s) - (uint64_t)(%s) - (uint64_t)_cf;"
                 " _cf = (int)((_t >> %d) & 1); %s }  /* sbb */"
                 % (dst, src, w, _fmt_operand_write(ops[0], "(uint32_t)_t")),
                 self._result_snapshot(ops, "sbb")]
+
+    def _adc_sbb_of(self, ops, m, dst, src, w):
+        """adc/sbb that also publish OF into _fb, for a signed jcc after them.
+
+        dst and src are read once, before the write, so `sbb ecx, [ecx]` and
+        a destination overwritten before the jcc both give the hardware's OF:
+        the sign bit of (d ^ s) & (d ^ r) for sbb, ~(d ^ s) & (d ^ r) for adc,
+        with the carry or borrow already in r.
+        """
+        op, inv = ("-", "") if m == "sbb" else ("+", "~")
+        return ["{ uint32_t _d = (uint32_t)(%s), _s = (uint32_t)(%s);"
+                " uint64_t _t = (uint64_t)_d %s (uint64_t)_s %s (uint64_t)_cf;"
+                " _cf = (int)((_t >> %d) & 1); %s"
+                " _fb = ((%s(_d ^ _s) & (_d ^ (uint32_t)_t)) >> %d) & 1u; }  /* %s, OF in _fb */"
+                % (dst, src, op, op, w, _fmt_operand_write(ops[0], "(uint32_t)_t"),
+                   inv, w - 1, m),
+                self._result_snapshot(ops, m)]
 
     def _lift_adc(self, insn, ops):
         """ADC: add with carry."""
@@ -2244,6 +2301,8 @@ class Lifter:
         dst = _fmt_operand_read(ops[0])
         src = _fmt_operand_read(ops[1])
         w = (_operand_width(ops[0]) or 4) * 8
+        if self.needs_of:
+            return self._adc_sbb_of(ops, "adc", dst, src, w)
         return ["{ uint64_t _t = (uint64_t)(%s) + (uint64_t)(%s) + (uint64_t)_cf;"
                 " _cf = (int)((_t >> %d) & 1); %s }  /* adc */"
                 % (dst, src, w, _fmt_operand_write(ops[0], "(uint32_t)_t")),
@@ -2882,11 +2941,12 @@ class Lifter:
             targets.append(val)
         return targets
 
-    def _analyze_switch_table(self, ops):
+    def _analyze_switch_table(self, ops, jmp_va=None):
         """Detect if an indirect jmp operand is an intra-function switch table.
         Pattern: jmp [reg*scale + table_base] or jmp [reg + table_base]
         Returns (targets: list[int]) if ALL table entries are within the current
-        function, else empty list."""
+        function, else empty list. jmp_va, when given, lets a one-arm table
+        through if a bound check and byte map prove it (_byte_map_one_arm)."""
         if not ops or ops[0].type != "mem":
             return []
         op = ops[0]
@@ -2918,6 +2978,8 @@ class Lifter:
         # likely a coincidence than a jump table.
         if len(inside) >= 2:
             return inside
+        if len(inside) == 1 and self._byte_map_one_arm(jmp_va, op, inside):
+            return inside
         if table_va in self.jump_table_targets:
             # A census entry is authoritative (see _authoritative_jump_tables);
             # never rediscover arms it rejected.
@@ -2946,6 +3008,45 @@ class Lifter:
         if len(below) >= 2:
             return below
         return []
+
+    def _byte_map_one_arm(self, jmp_va, op, inside):
+        """True when the code before the jmp proves a one-arm table.
+
+        MSVC dispatches a sparse switch through a byte map:
+
+            cmp  ecx, 6
+            ja   default
+            movzx ecx, byte [ecx + MAP]
+            jmp  [ecx*4 + TABLE]
+
+        With one distinct arm the table has a single entry, which the
+        two-arm rule rejects as a coincidence; the jmp then became a tail
+        call into the middle of its own function (LEGO Harry Potter
+        0x0096D7E4). The bound fixes the map's length, so when all N+1 map
+        bytes index the arms read here the table is fully known.
+        """
+        if jmp_va is None or op.mem_base or op.mem_scale != 4 or not op.mem_index:
+            return False
+        idx = op.mem_index
+        insns = self.func_instructions
+        pos = next((i for i, insn in enumerate(insns) if insn.address == jmp_va), None)
+        if pos is None or pos < 3:
+            return False
+        cmp, ja, movzx = insns[pos - 3], insns[pos - 2], insns[pos - 1]
+        if (movzx.mnemonic != "movzx" or len(movzx.operands) != 2
+                or movzx.operands[0].type != "reg" or movzx.operands[0].reg != idx):
+            return False
+        src = movzx.operands[1]
+        if (src.type != "mem" or src.mem_size != 1 or src.mem_base != idx
+                or src.mem_index or not src.mem_disp):
+            return False
+        if ja.mnemonic != "ja" or cmp.mnemonic != "cmp" or len(cmp.operands) != 2:
+            return False
+        reg, bound = cmp.operands
+        if reg.type != "reg" or reg.reg != idx or bound.type != "imm" or bound.imm < 0:
+            return False
+        byte_map = self._image_bytes(src.mem_disp, bound.imm + 1)
+        return byte_map is not None and all(b < len(inside) for b in byte_map)
 
     def _leading_arms(self, targets):
         """Entries up to the first one outside the current function."""
@@ -2999,7 +3100,7 @@ class Lifter:
             return [f"goto loc_{insn.jump_target:08X};"]
         elif len(ops) >= 1:
             # Detect intra-function switch tables (computed gotos)
-            switch_targets = self._analyze_switch_table(ops)
+            switch_targets = self._analyze_switch_table(ops, insn.address)
             if switch_targets:
                 target_expr = _fmt_operand_read(ops[0])
                 unique_targets = sorted(set(switch_targets))

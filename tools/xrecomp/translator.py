@@ -63,12 +63,44 @@ def _merge_flag_states(states):
     if first[0] in ("cmp", "test") and len(first[1]) == 2:
         width = _operand_width(first[1][0]) or _operand_width(first[1][1])
         for kind, ops in states[1:]:
-            if kind != first[0] or len(ops) != 2:
+            if len(ops) != 2:
                 return None
             if (_operand_width(ops[0]) or _operand_width(ops[1])) != width:
                 return None
+            if kind != first[0]:
+                return _merge_zero_cmp_and_test(states, width)
         return first
     return _merge_zero_flag(states)
+
+
+def _merge_zero_cmp_and_test(states, width):
+    """Join `cmp X, 0` edges with `test m, imm` edges.
+
+    normalise_zero_test turns `test ecx, ecx` into `cmp ecx, 0`, so a block
+    reached by it and by `test dword [eax+0x84], 0x100` (LEGO Harry Potter
+    sub_00459500) saw two operations and inherited nothing. `cmp X, 0` is
+    `test X, all-ones`: same ZF/SF/PF, CF = OF = 0. The cmp edge snapshots
+    _fb = 0 and a test edge with a non-zero immediate snapshots _fb != 0, so
+    the "__test_or_zero" state reads its mask as `_fb ? _fb : all-ones`.
+    """
+    if not width:
+        return None
+    mask = (1 << (8 * width)) - 1
+    kinds = set()
+    for kind, ops in states:
+        if (len(ops) != 2 or ops[1].type != "imm"
+                or (_operand_width(ops[0]) or _operand_width(ops[1])) != width):
+            return None
+        if kind == "cmp" and ops[1].imm & mask == 0:
+            kinds.add(kind)
+        elif kind == "test" and ops[1].imm & mask:
+            kinds.add(kind)
+        else:
+            return None
+    if kinds != {"cmp", "test"}:
+        return None
+    return ("__test_or_zero",
+            next(list(ops) for kind, ops in states if kind == "test"))
 
 
 def _merge_zero_flag(states):
@@ -440,6 +472,10 @@ def load_label_db(labels_json_path):
 
 class FunctionTranslator:
     """Translates individual x86 functions to C source code."""
+
+    # Per-game: {entry VA: (reg, mask, value)} for functions whose entry block
+    # reads ZF set by every caller to ((reg & mask) == value). See --entry-zf.
+    entry_zf: dict[int, tuple[str, int, int]] = {}
 
     STRONG_ENTRY_METHODS = frozenset({
         "entry_point", "call_target", "indirect_call_slot",
@@ -1712,6 +1748,32 @@ class FunctionTranslator:
         "b", "nae", "c", "ae", "nb", "nc", "be", "na", "a", "nbe",
     })
 
+    _SIGNED_CC = frozenset({
+        "l", "nge", "ge", "nl", "le", "ng", "g", "nle", "o", "no",
+    })
+
+    @staticmethod
+    def _function_needs_adc_sbb_of(instructions):
+        """True when the function has adc/sbb and something that may read OF.
+
+        Only these pay for OF after adc/sbb (Lifter._adc_sbb_of), for the
+        reason _cf is declared only where read: a line per adc/sbb otherwise.
+        pushfd counts because it builds EFLAGS from the jo condition.
+        """
+        has_carry_arith = reads_of = False
+        for insn in instructions:
+            m = insn.mnemonic
+            if m in ("adc", "sbb"):
+                has_carry_arith = True
+            elif m == "pushfd":
+                reads_of = True
+            else:
+                for prefix in ("j", "set", "cmov"):
+                    if (m.startswith(prefix)
+                            and m[len(prefix):] in FunctionTranslator._SIGNED_CC):
+                        reads_of = True
+        return has_carry_arith and reads_of
+
     @staticmethod
     def _function_needs_cf(instructions):
         """True when something in the function reads CF."""
@@ -2285,7 +2347,8 @@ class FunctionTranslator:
                 continue
             operand = insn.operands[0]
             if jump_table_targets is None:
-                targets = self.lifter._analyze_switch_table(insn.operands)
+                targets = self.lifter._analyze_switch_table(
+                    insn.operands, insn.address)
             else:
                 targets = jump_table_targets.get(operand.mem_disp, ())
             local = {target for target in targets if start <= target < end}
@@ -2388,6 +2451,7 @@ class FunctionTranslator:
                         self.disasm.disassemble_function(raw_bytes, start, end))
         if not instructions:
             return [], []
+        self.lifter.func_instructions = instructions
         authoritative_jump_tables = self._authoritative_jump_tables(
             instructions, validated_jump_tables)
         self.lifter.jump_table_targets = (
@@ -2416,6 +2480,7 @@ class FunctionTranslator:
                     raw_bytes, start, end, resync=resync)
                 if not instructions:
                     return [], []
+                self.lifter.func_instructions = instructions
                 (imm_refs, computed_jump_edges, debug_slide_int3s,
                  debug_slide_bypasses,
                  switch_leaders) = self._control_flow_census(
@@ -2735,7 +2800,7 @@ class FunctionTranslator:
                                  "lock cmpxchg", "inc", "dec", "sahf", "popfd", "fcomi", "mul", "imul",
                                  "fcomip", "fcompi", "fucomi", "fucomip", "fucompi")
                or insn.mnemonic in _RESULT_SNAPSHOT_SETTERS
-               for insn in instructions):
+               for insn in instructions) or start in self.entry_zf:
             lines.append("    uint32_t _fa = 0, _fb = 0;")
             lines.append("    int32_t _fas = 0, _fbs = 0;")
             lines.append("    (void)_fa; (void)_fb; (void)_fas; (void)_fbs;")
@@ -2777,6 +2842,7 @@ class FunctionTranslator:
         # corrupts multi-word arithmetic (add/adc pairs) and the shr/adc
         # idiom MSVC emits for odd trailing elements.
         self.lifter.needs_cf = has_carry
+        self.lifter.needs_of = self._function_needs_adc_sbb_of(instructions)
         self.lifter.publishes_ebp = self._func_owns_a_frame(instructions)
 
         # SSE and MMX are architectural state, declared globally by the
@@ -2906,6 +2972,22 @@ class FunctionTranslator:
         # settled_state onto the dict that pass fills is what makes the two
         # cases one loop: it then reads exactly the states it has computed
         # itself, which is what this function did before the probe existed.
+        # A function entered with ZF already set by its callers (entry_zf): the
+        # entry block starts from that compare, snapshotted on entry. Only
+        # when nothing inside the function jumps back to the entry, or the
+        # snapshot would be stale on the second visit.
+        entry_state = None
+        if start in self.entry_zf and not preds[start]:
+            reg, mask, value = self.entry_zf[start]
+            lines.append(f"    _fa = {reg} & 0x{mask:X}u; _fb = 0x{value:X}u;"
+                         " /* entry ZF: set by every caller */")
+            entry_state = ("__entry_zf", [])
+
+        def block_incoming(bb, known):
+            if bb.start == start:
+                return entry_state
+            return _incoming_flag_state(preds[bb.start], known, False)
+
         out_state = {}
         settled_state = out_state
         if any(p >= bb.start for bb in blocks for p in preds[bb.start]):
@@ -2915,8 +2997,7 @@ class FunctionTranslator:
             for _ in range(3):
                 changed = False
                 for bb in blocks:
-                    incoming = _incoming_flag_state(
-                        preds[bb.start], out_state, bb.start == start)
+                    incoming = block_incoming(bb, out_state)
                     _, new_out = lift_basic_block(
                         self.lifter, bb, flag_state=incoming)
                     if out_state.get(bb.start) != new_out:
@@ -2932,7 +3013,8 @@ class FunctionTranslator:
         unseen_entries = set(self.lifter.imm_code_refs)
         for insn in instructions:
             if insn.mnemonic == "jmp" and not insn.jump_target and insn.operands:
-                unseen_entries.update(self.lifter._analyze_switch_table(insn.operands))
+                unseen_entries.update(self.lifter._analyze_switch_table(
+                    insn.operands, insn.address))
         edge_vars, edge_sets, block_lines = [], [], {}
 
         for bb in blocks:
@@ -2950,8 +3032,7 @@ class FunctionTranslator:
             # states come from the pre-pass above, so a back edge's
             # predecessor is known here even though it sits later in address
             # order.
-            incoming = _incoming_flag_state(preds[bb.start], settled_state,
-                                            bb.start == start)
+            incoming = block_incoming(bb, settled_state)
 
             stmts, out_state[bb.start] = lift_basic_block(
                 self.lifter, bb, flag_state=incoming)
