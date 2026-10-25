@@ -18,8 +18,8 @@ import os
 import re
 import struct
 
-from .disasm import Instruction, Operand, LOOP_JUMPS
-from .config import is_code_address, is_data_address, va_to_file_offset
+from .disasm import Operand, LOOP_JUMPS
+from .config import is_code_address, va_to_file_offset
 
 # Function export names of the Windows libraries the host exe links
 # (kernel32/user32/gdi32/advapi32/winmm/ws2_32/ole32/dbghelp/...). A guest
@@ -234,19 +234,6 @@ def _st(macro, addr, value):
     if _is_stack_addr(addr):
         return f"{macro}({addr}) = {value};"
     return f"{_GUEST_STORE[macro]}({addr}, {value});"
-
-
-def _fmt_fpu_operand(op):
-    """Format an x87 memory or stack-register operand for reading."""
-    if op.type == "mem":
-        return _ld("MEMD" if op.mem_size == 8 else "MEMF", _fmt_mem(op))
-    if op.type == "reg":
-        name = op.reg or ""
-        if name == "st":
-            return "fp_st(0)"
-        if name.startswith("st(") and name.endswith(")"):
-            return f"fp_st({name[3:-1]})"
-    return None
 
 
 def _fmt_mem(op):
@@ -1458,7 +1445,7 @@ class Lifter:
         # batch translator diffs this against the functions it actually defined
         # so it can stub out the remainder (see translate_batch_split).
         self.referenced_calls = {}
-        # HobbitRecomp: `jmp reg` switch arms resolved by our analyzer from
+        # `jmp reg` switch arms resolved by the analyzer (tools/hobbit) from
         # PIC tables, {jmp_addr: [absolute target, ...]}.
         self.reg_switch_targets = {}
         # Mnemonics that fell through to the TODO comment, as
@@ -2035,7 +2022,7 @@ class Lifter:
     # ── MOV family ──
 
     def _lift_mov(self, insn, ops):
-        if nops := len(ops) < 2:
+        if len(ops) < 2:
             return [f"/* mov: bad operands */"]
         # Control and debug registers (cr0, dr7...) are privileged; in a user
         # binary they only appear where data was decoded as code. _fmt_reg
@@ -2676,19 +2663,6 @@ class Lifter:
         return self._snapshot_flags(insn, ops, kind)
 
     # ── Control flow ──
-
-    def _build_call_args(self, target_addr):
-        """Build argument list for a function call based on ABI data."""
-        abi_info = self.abi_db.get(target_addr, {})
-        cc = abi_info.get("calling_convention", "cdecl")
-        num_params = abi_info.get("estimated_params", 0)
-
-        args = []
-        if cc in ("thiscall", "thiscall_cdecl"):
-            args.append("(void*)(uintptr_t)ecx")
-        for i in range(num_params):
-            args.append(f"0 /* a{i+1} */")
-        return ", ".join(args)
 
     # SEH prolog/epilog addresses - these functions modify ebp for their
     # caller.  After calling __SEH_prolog, the caller must read back ebp
