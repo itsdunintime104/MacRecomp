@@ -56,6 +56,14 @@ M1-c2 (SSE2 integer and overflow flag)
   RECOMP_OF_SUB/RECOMP_OF_ADD.
 - run.py: `--only @FILE` reads the address list from a file.
 
+Removed because nothing here calls them:
+- config.py: `configure_from_xbe` (it needs upstream's `tools.xbe_parser`),
+  `_classify` and its section-name sets, `configured_from`, `is_data_address`,
+  `set_game_name` (`banner_name` returns the title, else `GAME_NAME`).
+- lifter.py: `_fmt_fpu_operand`, `Lifter._build_call_args`.
+- translator.py: `BatchTranslator.translate_batch`, `translate_by_category`,
+  `get_functions_by_category`; `FunctionTranslator._determine_calling_convention`.
+
 New files: run.py (CLI), UPSTREAM.md. Inputs come from tools/hobbit/emit_inputs.py.
 
 ## Known gaps (not handled in this slice)
