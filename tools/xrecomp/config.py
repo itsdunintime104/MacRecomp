@@ -1,33 +1,15 @@
 """
 Recompiler configuration - section mappings and constants.
 
-These describe the target XBE's memory layout. Call configure_from_xbe() before
-translating anything; it reads the real section table out of the binary being
-recompiled. The module-level values below are only a fallback for callers that
-never configure (and for tests), and they will be wrong for any binary but the
-one they were captured from.
-
-Historically this file held a hand-edited section table for whichever game was
-being worked on last, which silently truncated any larger binary -- every VA past
-the stale table's end looked like "not code" and its functions failed to lift.
+These describe the memory layout of the image being translated. Call
+configure_from_macho() before translating anything; it installs the section
+table from analysis.json. The module-level values below are only a fallback for
+callers that never configure (and for tests); they come from an Xbox title and
+are wrong for any other binary.
 """
 
 from dataclasses import dataclass
 from typing import List, Optional
-
-# Section flag bit from the XBE format (see tools/xbe_parser).
-SECTION_EXECUTABLE = 0x00000004
-
-# Sections that hold code despite not being marked executable in the XBE, or
-# that we always want treated as code. Matched by exact section name.
-FORCE_CODE_SECTIONS = {"XIPS"}
-
-# Sections that are resources/data even if flagged executable.
-FORCE_DATA_SECTIONS = {
-    ".data", ".data1", ".rdata",
-    "EnglishXlate", "JapaneseXlate", "GermanXlate",
-    "FrenchXlate", "SpanishXlate", "ItalianXlate",
-}
 
 
 @dataclass
@@ -40,7 +22,7 @@ class Section:
     is_code: bool
 
 
-# Populated by configure_from_xbe(). Fallback: Xbox Dashboard build 3944.
+# Populated by configure_from_macho(). Fallback: Xbox Dashboard build 3944.
 _SECTIONS: List[Section] = [
     Section(".text", 0x00012000, 636684, 0x00002000, 636684, True),
     Section("D3D", 0x000AD720, 72432, 0x0009E000, 72432, True),
@@ -69,72 +51,13 @@ DATA_VA_END = 0x00170000
 KERNEL_THUNK_ADDR = 0x00012000
 ENTRY_POINT = 0x00052A81
 
-_configured_from: Optional[str] = None
-
-# Display name used in generated-code banners. Title-agnostic default; set it
-# to match the game being recompiled via --game-name (see tools.recomp __main__)
-# or set_game_name().
+# Display name in generated-code banners when the image has no title.
 GAME_NAME = "Xbox Game"
-_game_name_explicit = False
-
-
-def set_game_name(name: str) -> None:
-    """Set the display name stamped into generated code banners."""
-    global GAME_NAME, _game_name_explicit
-    if name:
-        GAME_NAME = name
-        _game_name_explicit = True
 
 
 def banner_name(title: Optional[str] = None) -> str:
-    """The name to stamp into a generated-code banner.
-
-    Two mechanisms arrived at this from different directions and both are
-    worth keeping: --game-name (an explicit override, from #17) and the title
-    read out of the XBE header (automatic, and cannot go stale). The header
-    wins over the default because it is right without anyone remembering a
-    flag; the explicit override wins over the header because someone asked
-    for it by name.
-    """
-    if _game_name_explicit:
-        return GAME_NAME
+    """The name to stamp into a generated-code banner: the title, else GAME_NAME."""
     return title or GAME_NAME
-
-
-def _classify(name: str, flags: int) -> bool:
-    """Decide whether a section holds code."""
-    if name in FORCE_DATA_SECTIONS:
-        return False
-    if name in FORCE_CODE_SECTIONS:
-        return True
-    return bool(flags & SECTION_EXECUTABLE)
-
-
-def configure_from_xbe(xbe_path: str) -> None:
-    """Load the real section layout from the XBE being recompiled.
-
-    Without this the recompiler uses whatever layout happens to be baked into
-    this module, and any address beyond it is treated as non-code -- which
-    fails every function past that point instead of reporting a problem.
-    """
-    from tools.xbe_parser.xbe_parser import XBEParser
-
-    xbe = XBEParser(xbe_path).parse()
-    sections = [
-        Section(
-            name=s.name,
-            va=s.virtual_addr,
-            va_size=s.virtual_size,
-            raw_addr=s.raw_addr,
-            raw_size=s.raw_size,
-            is_code=_classify(s.name, s.flags),
-        )
-        for s in xbe.sections
-    ]
-    if not sections:
-        raise ValueError(f"XBE has no sections: {xbe_path}")
-
-    _install(sections, xbe.header.entry_point, xbe.header.kernel_thunk_addr, xbe_path)
 
 
 # Mach-O sections that hold code. Everything else is data.
@@ -163,17 +86,16 @@ def configure_from_macho(analysis: dict, image_path, entry_point: int) -> None:
             ))
     if not sections:
         raise ValueError(f"analysis has no sections: {image_path}")
-    _install(sections, entry_point, 0, str(image_path))
+    _install(sections, entry_point, 0)
 
 
-def _install(sections, entry_point, kernel_thunk_addr, origin):
-    global _SECTIONS, SECTIONS, _configured_from
+def _install(sections, entry_point, kernel_thunk_addr):
+    global _SECTIONS, SECTIONS
     global TEXT_VA_START, TEXT_VA_END, RDATA_VA_START, RDATA_VA_END
     global DATA_VA_START, DATA_VA_END, KERNEL_THUNK_ADDR, ENTRY_POINT
 
     _SECTIONS = sorted(sections, key=lambda s: s.va)
     SECTIONS = [(s.name, s.va, s.va_size, s.raw_addr) for s in _SECTIONS]
-    _configured_from = origin
 
     by_name = {s.name: s for s in _SECTIONS}
 
@@ -202,13 +124,8 @@ def _install(sections, entry_point, kernel_thunk_addr, origin):
         KERNEL_THUNK_ADDR = kernel_thunk_addr
 
 
-def configured_from() -> Optional[str]:
-    """Path of the XBE this layout came from, or None if still the fallback."""
-    return _configured_from
-
-
 def va_to_file_offset(va):
-    """Convert virtual address to XBE file offset."""
+    """File offset of a virtual address, or None if it has no file bytes."""
     for s in _SECTIONS:
         if s.va <= va < s.va + s.va_size:
             offset = va - s.va + s.raw_addr
@@ -221,16 +138,8 @@ def va_to_file_offset(va):
 
 
 def is_code_address(va):
-    """Check if VA is in an executable section (.text or XDK library sections)."""
+    """True if VA is in a code section."""
     for s in _SECTIONS:
         if s.va <= va < s.va + s.va_size:
             return s.is_code
-    return False
-
-
-def is_data_address(va):
-    """Check if VA is in a data section."""
-    for s in _SECTIONS:
-        if s.va <= va < s.va + s.va_size:
-            return not s.is_code
     return False
