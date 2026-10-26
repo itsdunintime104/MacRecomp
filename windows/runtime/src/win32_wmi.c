@@ -20,6 +20,7 @@
 
 /* Defined in win32_input.c and win32_com.c. */
 uint32_t w32_input_pads(void);
+void w32_input_trace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 uint32_t w32_bstr_alloc(const void *utf16, uint32_t len);
 
 #define WBEM_E_NOT_FOUND 0x80041002u
@@ -164,6 +165,7 @@ static void IWbemClassObject_Get(void)
         MEM16(var + VARIANT_VT) = VT_BSTR;
         MEM32(var + VARIANT_VAL) = w32_bstr_alloc(w, 2u * (uint32_t)n);
     }
+    w32_input_trace("WMI Get DeviceID -> %s", id);
     if (type)
         MEM32(type) = CIM_STRING;
     if (flavor)
@@ -245,6 +247,7 @@ static void IEnumWbemClassObject_Next(void)
     }
     if (returned)
         MEM32(returned) = n;
+    w32_input_trace("WMI Next %u -> %u objects", count, n);
     W32_RETURN(5, n == count ? COM_S_OK : COM_S_FALSE);
 }
 

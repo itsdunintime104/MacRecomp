@@ -18,7 +18,9 @@
 #include <SDL.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -84,6 +86,28 @@ static struct {
 static int s_xi_inited;
 static pthread_mutex_t s_xi_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* HPRECOMP_TRACE_INPUT=1: "PAD" lines on stderr for pad discovery
+ * (EnumDevices, WMI) and for every change of an XInput result. */
+static int s_itrace = -1;
+
+void w32_input_trace(const char *fmt, ...)
+{
+    if (s_itrace < 0) {
+        const char *s = getenv("HPRECOMP_TRACE_INPUT");
+        s_itrace = s != NULL && *s != '\0' && *s != '0';
+    }
+    if (!s_itrace)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    flockfile(stderr);
+    fputs("PAD ", stderr);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    funlockfile(stderr);
+    va_end(ap);
+}
+
 /* Runs with s_xi_lock held: close unplugged pads, open new ones into the
  * first free user. */
 static void xi_refresh(void)
@@ -92,10 +116,12 @@ static void xi_refresh(void)
         s_xi_inited = 1;
         if (!SDL_WasInit(SDL_INIT_GAMECONTROLLER))
             SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
+        w32_input_trace("init: %d joysticks", SDL_NumJoysticks());
     }
     SDL_GameControllerUpdate();
     for (uint32_t i = 0; i < XUSER_MAX_COUNT; i++) {
         if (s_xi[i].gc && !SDL_GameControllerGetAttached(s_xi[i].gc)) {
+            w32_input_trace("user %u closed", i);
             SDL_GameControllerClose(s_xi[i].gc);
             s_xi[i].gc = NULL;
         }
@@ -112,8 +138,11 @@ static void xi_refresh(void)
             else if (!s_xi[i].gc && free_user < 0)
                 free_user = (int)i;
         }
-        if (!have && free_user >= 0)
+        if (!have && free_user >= 0) {
             s_xi[free_user].gc = SDL_GameControllerOpen(j);
+            w32_input_trace("user %d opened: joystick %d \"%s\" %s", free_user, j,
+                            SDL_GameControllerNameForIndex(j), s_xi[free_user].gc ? "ok" : SDL_GetError());
+        }
     }
 }
 
@@ -205,6 +234,21 @@ static void imp_XInputGetState(void)
         memcpy(guest_ptr(st + XI_STATE_GAMEPAD), gp, XI_GP_SIZE);
         r = W32_ERROR_SUCCESS;
     }
+    /* Trace: the result, buttons and left stick when they change. */
+    static uint32_t traced[XUSER_MAX_COUNT][2] = {{~0u}, {~0u}, {~0u}, {~0u}};
+    if (user < XUSER_MAX_COUNT) {
+        uint16_t b;
+        int16_t lx, ly;
+        memcpy(&b, s_xi[user].last + XI_GP_BUTTONS, 2);
+        memcpy(&lx, s_xi[user].last + XI_GP_LX, 2);
+        memcpy(&ly, s_xi[user].last + XI_GP_LY, 2);
+        uint32_t key = (uint32_t)b << 16 | (uint32_t)(lx / 8192 + 4) << 4 | (uint32_t)(ly / 8192 + 4);
+        if (traced[user][0] != r || traced[user][1] != key) {
+            traced[user][0] = r, traced[user][1] = key;
+            w32_input_trace("XInputGetState user %u -> %u buttons %04X lx %d ly %d focus %d", user, r, b, lx,
+                            ly, SDL_GetKeyboardFocus() != NULL);
+        }
+    }
     pthread_mutex_unlock(&s_xi_lock);
     W32_RETURN(2, r);
 }
@@ -250,6 +294,11 @@ static void imp_XInputGetCapabilities(void)
         MEM16(caps + XI_CAPS_VIBRATION + XI_VIB_LEFT) = 0xFFFF;
         MEM16(caps + XI_CAPS_VIBRATION + XI_VIB_RIGHT) = 0xFFFF;
         r = W32_ERROR_SUCCESS;
+    }
+    static uint32_t traced[XUSER_MAX_COUNT] = {~0u, ~0u, ~0u, ~0u};
+    if (user < XUSER_MAX_COUNT && traced[user] != r) {
+        traced[user] = r;
+        w32_input_trace("XInputGetCapabilities user %u flags %u -> %u", user, W32_ARG(1), r);
     }
     pthread_mutex_unlock(&s_xi_lock);
     W32_RETURN(3, r);
@@ -1028,9 +1077,13 @@ static void IDirectInput8A_EnumDevices(void)
         MEM16(inst + DIDI_USAGE_PAGE) = 1; /* generic desktop */
         MEM16(inst + DIDI_USAGE) = pad ? 5 : DEVS[i].usage;
         uint32_t args[2] = {inst, ref};
-        if (guest_call_cdecl(cb, 2, args) == DIENUM_STOP)
+        uint32_t more = guest_call_cdecl(cb, 2, args);
+        if (pad)
+            w32_input_trace("EnumDevices pad %u -> callback %u", i - n_devs, more);
+        if (more == DIENUM_STOP)
             break;
     }
+    w32_input_trace("EnumDevices filter %u flags %X: %u pads", filter, flags, n_pads);
     g_esp = saved;
     W32_RETURN(5, DI_OK);
 }
