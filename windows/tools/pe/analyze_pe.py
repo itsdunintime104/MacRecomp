@@ -659,7 +659,8 @@ def read_starts(path: Path) -> frozenset[int]:
 
 
 def _table_entries(pe: PE, tables: Sequence[tuple[int, int]]) -> list[int]:
-    """Non-null dwords of the [first, last) VA ranges (initialiser tables)."""
+    """Non-null dwords of the [first, last) VA ranges (the CRT initialiser and
+    terminator tables that _initterm walks at start-up and at exit)."""
     out = []
     for lo, hi in tables:
         off = pe.rva_to_off(lo - pe.image_base)
@@ -725,7 +726,7 @@ def main() -> None:
     parser.add_argument("--add-starts", type=Path, default=None,
                         help="hex VAs that are function entries")
     parser.add_argument("--init-tables", type=Path, default=None,
-                        help="hex VA ranges of CRT initialiser tables")
+                        help="hex VA ranges of CRT initialiser and terminator tables")
     parser.add_argument("-o", "--output", type=Path, required=True)
     args = parser.parse_args()
     result = analyze(

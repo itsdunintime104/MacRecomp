@@ -296,13 +296,14 @@ static uint32_t dds_level_bytes(uint32_t w, uint32_t h, uint32_t block, uint32_t
     return block ? ((w + 3) / 4) * ((h + 3) / 4) * block : w * h * bpp;
 }
 
-/* A DDS header for w x h, levels mip levels and faces faces; fourcc, or
- * (fourcc NULL) an RGB layout of bits with masks m. Data bytes follow from
- * fill (random when NULL); returns the guest address. */
+/* A DDS header for w x h, levels mip levels and faces faces; fourcc (a DXT
+ * format when bits is 0, else a float format of bits a texel), or (fourcc
+ * NULL) an RGB layout of bits with masks m. Random data bytes follow; returns
+ * the guest address. */
 static uint32_t make_dds(uint32_t w, uint32_t h, uint32_t levels, uint32_t faces, const char *fourcc, uint32_t bits,
                          const uint32_t m[4], uint32_t *size, uint8_t **data)
 {
-    uint32_t block = fourcc ? (memcmp(fourcc, "DXT1", 4) == 0 ? 8u : 16u) : 0u, bytes = 0;
+    uint32_t block = fourcc && bits == 0 ? (memcmp(fourcc, "DXT1", 4) == 0 ? 8u : 16u) : 0u, bytes = 0;
     for (uint32_t l = 0; l < levels; l++)
         bytes += dds_level_bytes(w >> l ? w >> l : 1, h >> l ? h >> l : 1, block, bits / 8);
     bytes *= faces;
@@ -450,6 +451,46 @@ static void test_dds_rgb(uint32_t gdev)
     printf("%s DDS R5G6B5 8x4: %u/4 file levels match\n", good == 4 ? "PASS" : "FAIL", good);
     CHECK(good == 4);
     CHECK(M(tex, IDirect3DTexture9, Release, 0) == 0u);
+}
+
+/* Float formats name their D3DFORMAT number in the FourCC field. An
+ * A32B32G32R32F 8x4 file with all 4 levels: format, size, levels and every
+ * level byte for byte. An R16F 8x8 file with 2 of 4 levels keeps its 2 levels
+ * (no generated float levels). The first file one byte short fails. */
+static void test_dds_float(uint32_t gdev)
+{
+    static const uint32_t a32 = D3DFMT_A32B32G32R32F, r16 = D3DFMT_R16F;
+    uint32_t size, out = galloc(4), good = 0;
+    uint8_t *data;
+    uint32_t file = make_dds(8, 4, 4, 1, (const char *)&a32, 128, NULL, &size, &data);
+    uint32_t hr = CALL(thunk_D3DXCreateTextureFromFileInMemory, gdev, file, size, out);
+    CHECK(hr == D3D_OK);
+    if (hr == D3D_OK) {
+        uint32_t tex = MEM32(out);
+        check_desc(tex, D3DFMT_A32B32G32R32F, 8, 4, 4);
+        for (uint32_t l = 0, off = 0; l < 4; l++) {
+            uint32_t w = 8 >> l ? 8 >> l : 1, h = 4 >> l ? 4 >> l : 1;
+            good += level_matches(tex, 0, 0, l, data + off, w, h, 0, 16);
+            off += dds_level_bytes(w, h, 0, 16);
+        }
+        CHECK(M(tex, IDirect3DTexture9, Release, 0) == 0u);
+    }
+    MEM32(out) = 0x5A5A5A5Au;
+    uint32_t hr_short = CALL(thunk_D3DXCreateTextureFromFileInMemory, gdev, file, size - 1, out);
+    int short_ok = hr_short == D3DXERR_INVALIDDATA && MEM32(out) == 0x5A5A5A5Au;
+    uint32_t file16 = make_dds(8, 8, 2, 1, (const char *)&r16, 16, NULL, &size, &data);
+    uint32_t hr16 = CALL(thunk_D3DXCreateTextureFromFileInMemory, gdev, file16, size, out);
+    CHECK(hr16 == D3D_OK);
+    if (hr16 == D3D_OK) {
+        uint32_t tex = MEM32(out);
+        check_desc(tex, D3DFMT_R16F, 8, 8, 2);
+        good += level_matches(tex, 0, 0, 0, data, 8, 8, 0, 2);
+        good += level_matches(tex, 0, 0, 1, data + dds_level_bytes(8, 8, 0, 2), 4, 4, 0, 2);
+        CHECK(M(tex, IDirect3DTexture9, Release, 0) == 0u);
+    }
+    printf("%s DDS float: A32B32G32R32F 8x4 and R16F 8x8 %u/6 file levels match; one byte short 0x%08X\n",
+           good == 6 && short_ok ? "PASS" : "FAIL", good, hr_short);
+    CHECK(good == 6 && short_ok);
 }
 
 /* A DXT1 8x8 cube map with 4 levels: every face and level byte for byte. */
@@ -671,6 +712,7 @@ int main(void)
     test_dds_dxt1_mips(gdev);
     test_dds_dxt5(gdev);
     test_dds_rgb(gdev);
+    test_dds_float(gdev);
     test_dds_cube(gdev);
     test_dds_truncated(gdev);
     test_save_surface();

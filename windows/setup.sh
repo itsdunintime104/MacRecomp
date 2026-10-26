@@ -50,7 +50,7 @@ Usage: ./setup.sh [options] [game folder]
 
 Builds the app from your own copy of the Windows game ($APP_GAME_TITLE).
 
-game folder   The folder that holds $GAME_EXE and GAME*.DAT,
+game folder   The folder that holds $GAME_EXE and its $DATA_GLOB files,
               or the path of $GAME_EXE. Without it, setup.sh
               searches Steam under Wine, CrossOver and Whisky, other Steam
               libraries, GOG installs, ~/Games and external drives, and asks
