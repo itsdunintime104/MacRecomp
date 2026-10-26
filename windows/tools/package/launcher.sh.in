@@ -1,0 +1,35 @@
+# Starts the native game with the game folder and the libraries inside this app.
+# Interface: <game binary> <game image .exe> <game folder>. The game folder is
+# read-only to the game; saves go to ~/Library/Application Support/@APP_SAVE_NAME@.
+# Overrides: @APP_ENV_PREFIX@_GAME_DIR (game folder), @APP_ENV_PREFIX@_EXE (game image).
+CONTENTS=$(cd "$(dirname "$0")/.." && pwd)
+GAME_DIR="${@APP_ENV_PREFIX@_GAME_DIR:-$DEFAULT_GAME_DIR}"
+EXE="${@APP_ENV_PREFIX@_EXE:-$DEFAULT_EXE}"
+LOGDIR="$HOME/Library/Logs/@APP_SAVE_NAME@"
+SAVEDIR="$HOME/Library/Application Support/@APP_SAVE_NAME@"
+mkdir -p "$LOGDIR" "$SAVEDIR"
+# Keep the newest 20 logs; the run below adds one more.
+ls -1t "$LOGDIR"/run-*.log 2>/dev/null | tail -n +20 | while IFS= read -r old; do rm -f "$old"; done
+STAMP=$(date +%Y-%m-%d_%H%M%S)
+LOG="$LOGDIR/run-$STAMP.log"
+MSG=
+if [ -z "$GAME_DIR" ] || [ ! -f "$GAME_DIR/@APP_GAME_FILE@" ]; then
+    MSG="@APP_GAME_TITLE@ was not found at: $GAME_DIR. Set @APP_ENV_PREFIX@_GAME_DIR to the folder that holds @APP_GAME_FILE@."
+elif [ -z "$EXE" ] || [ ! -f "$EXE" ]; then
+    MSG="The game image was not found at: $EXE. Set @APP_ENV_PREFIX@_EXE to the path of @APP_IMAGE@."
+fi
+if [ -n "$MSG" ]; then
+    echo "@APP_NAME@: $MSG" | tee "$LOG" >&2
+    # A double-clicked app has no terminal, so show the error too; test runs set
+    # RECOMP_NO_ALERT_UI=1. The message goes in as an argument, not as script text.
+    if [ "${RECOMP_NO_ALERT_UI:-0}" != 1 ]; then
+        osascript -e 'on run argv' -e 'display alert "@APP_NAME@" message (item 1 of argv) as critical' -e 'end run' "$MSG" >/dev/null 2>&1
+    fi
+    exit 1
+fi
+# Use the Vulkan driver inside the app, and DXVK's SDL2 window system.
+export VK_DRIVER_FILES="$CONTENTS/Resources/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json"
+export DXVK_WSI_DRIVER=SDL2
+export DXVK_LOG_PATH="$LOGDIR"
+cd "$SAVEDIR"
+exec "$CONTENTS/MacOS/@GAME_ID@" "$EXE" "$GAME_DIR" >"$LOG" 2>&1

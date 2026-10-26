@@ -1,0 +1,59 @@
+--- a/src/kosmickrisp/bridge/mtl_command_queue.h	2026-10-24 17:49:32
++++ b/src/kosmickrisp/bridge/mtl_command_queue.h	2026-10-24 17:49:33
+@@ -36,6 +36,9 @@
+                               mtl_command_buffer **command_buffers,
+                               uint32_t count, mtl_commit_options *options);
+ 
++void mtl_command_queue_wait_for_drawable(mtl_command_queue *queue,
++                                         void *drawable);
++
+ void mtl_command_queue_signal_drawable(mtl_command_queue *queue,
+                                        void *drawable);
+ 
+--- a/src/kosmickrisp/bridge/mtl_command_queue.m	2026-10-24 17:49:32
++++ b/src/kosmickrisp/bridge/mtl_command_queue.m	2026-10-24 17:49:33
+@@ -110,6 +110,16 @@
+ }
+ 
+ void
++mtl_command_queue_wait_for_drawable(mtl_command_queue *queue, void *drawable)
++{
++   @autoreleasepool {
++      id<MTL4CommandQueue> q = (id<MTL4CommandQueue>)queue;
++      id<MTLDrawable> d = (id<MTLDrawable>)drawable;
++      [q waitForDrawable:d];
++   }
++}
++
++void
+ mtl_command_queue_signal_drawable(mtl_command_queue *queue, void *drawable)
+ {
+    @autoreleasepool {
+--- a/src/kosmickrisp/bridge/stubs/mtl_command_queue.c	2026-10-24 17:49:32
++++ b/src/kosmickrisp/bridge/stubs/mtl_command_queue.c	2026-10-24 17:49:33
+@@ -57,6 +57,11 @@
+ }
+ 
+ void
++mtl_command_queue_wait_for_drawable(mtl_command_queue *queue, void *drawable)
++{
++}
++
++void
+ mtl_command_queue_signal_drawable(mtl_command_queue *queue, void *drawable)
+ {
+ }
+--- a/src/kosmickrisp/vulkan/kk_queue.c	2026-10-24 17:49:33
++++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-10-24 17:49:33
+@@ -81,6 +81,11 @@
+       uint32_t count = util_dynarray_num_elements(&cmd_buffer->submit_cmd_bufs,
+                                                   mtl_command_buffer *);
+ 
++      if (cmd_buffer->drawable) {
++         mtl_command_queue_wait_for_drawable(queue->mtl_handle,
++                                             cmd_buffer->drawable);
++      }
++
+       /* Metal complains with empty submissions. */
+       if (count > 0u) {
+          mtl_commit_options_add_feedback_handler(queue->commit_options,

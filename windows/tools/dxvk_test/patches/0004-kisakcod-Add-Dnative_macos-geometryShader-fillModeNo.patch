@@ -1,0 +1,86 @@
+From 04e66af0d3a56cdaad96a4603a7cf7b0f9bff36f Mon Sep 17 00:00:00 2001
+From: John-Michael Mulesa <thesaxophonist@gmail.com>
+Date: Fri, 9 Oct 2026 08:59:02 -0400
+Subject: [PATCH 4/4] [kisakcod] Add -Dnative_macos: geometryShader,
+ fillModeNonSolid and depthClipEnable become optional
+
+KosmicKrisp is a conformant Vulkan 1.4 driver on Apple GPUs and supports
+everything else DXVK requires (robustness2 nullDescriptor included).
+
+---
+ meson.build                   |  4 ++++
+ meson_options.txt             |  1 +
+ src/dxvk/dxvk_device_info.cpp | 16 +++++++++++++---
+ 3 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index d10f07d4..bc40abff 100644
+--- a/meson.build
++++ b/meson.build
+@@ -3,6 +3,10 @@ project('dxvk', ['c', 'cpp'], version : '3.1.1', meson_version : '>= 0.58', defa
+ pkg = import('pkgconfig')
+ cpu_family = target_machine.cpu_family()
+ platform   = target_machine.system()
++
++if get_option('native_macos')
++  add_project_arguments('-DDXVK_NATIVE_MACOS', language : ['c', 'cpp'])
++endif
+ fs = import('fs')
+ 
+ cpp = meson.get_compiler('cpp')
+diff --git a/meson_options.txt b/meson_options.txt
+index 98851af2..a5891fa7 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -6,4 +6,5 @@ option('enable_d3d11', type : 'boolean', value : true, description: 'Build D3D11
+ option('build_id',     type : 'boolean', value : false)
+ option('native_glfw',  type : 'feature', value : 'auto', description: 'Enable GLFW WSI for DXVK Native')
+ option('native_sdl2',  type : 'feature', value : 'auto', description: 'Enable SDL2 WSI for DXVK Native')
++option('native_macos', type : 'boolean', value : false, description: 'kisakcod fork: relax requirements a conformant macOS driver (KosmicKrisp) cannot meet')
+ option('native_sdl3',  type : 'feature', value : 'auto', description: 'Enable SDL3 WSI for DXVK Native')
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index 7e3d16a7..df056c06 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -8,6 +8,16 @@
+ #include "dxvk_instance.h"
+ #include "dxvk_limits.h"
+ 
++// kisakcod fork: with -Dnative_macos=true these become optional. KosmicKrisp
++// (Mesa's Vulkan driver on Metal) is conformant but cannot provide geometry
++// shaders, wireframe fill or depth-clip control. D3D9 uses a GS only for
++// ProcessVertices; depth clip falls back to depth clamp. See KISAK_MACOS.md.
++#ifdef DXVK_NATIVE_MACOS
++#define DXVK_MACOS_REQUIRED false
++#else
++#define DXVK_MACOS_REQUIRED true
++#endif
++
+ namespace dxvk {
+ 
+   #define CORE_VERSIONS                            \
+@@ -850,10 +860,10 @@ namespace dxvk {
+       ENABLE_FEATURE(core.features, depthClamp, true),
+       ENABLE_FEATURE(core.features, drawIndirectFirstInstance, false),
+       ENABLE_FEATURE(core.features, dualSrcBlend, true),
+-      ENABLE_FEATURE(core.features, fillModeNonSolid, true),
++      ENABLE_FEATURE(core.features, fillModeNonSolid, DXVK_MACOS_REQUIRED),
+       ENABLE_FEATURE(core.features, fragmentStoresAndAtomics, true),
+       ENABLE_FEATURE(core.features, fullDrawIndexUint32, true),
+-      ENABLE_FEATURE(core.features, geometryShader, true),
++      ENABLE_FEATURE(core.features, geometryShader, DXVK_MACOS_REQUIRED),
+       ENABLE_FEATURE(core.features, imageCubeArray, true),
+       ENABLE_FEATURE(core.features, independentBlend, true),
+       ENABLE_FEATURE(core.features, largePoints, false),
+@@ -951,7 +961,7 @@ namespace dxvk {
+       ENABLE_EXT_FEATURE(extCustomBorderColor, customBorderColorWithoutFormat, false),
+ 
+       /* Depth clip matches D3D semantics where depth clamp does not */
+-      ENABLE_EXT_FEATURE(extDepthClipEnable, depthClipEnable, true),
++      ENABLE_EXT_FEATURE(extDepthClipEnable, depthClipEnable, DXVK_MACOS_REQUIRED),
+ 
+       /* Controls depth bias behaviour with emulated depth formats */
+       ENABLE_EXT_FEATURE(extDepthBiasControl, depthBiasControl, false),
+-- 
+2.46.0
+

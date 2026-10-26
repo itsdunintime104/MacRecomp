@@ -1,0 +1,150 @@
+From 67947f3df3ff61dbbaa85b10838e3c5f2af051f7 Mon Sep 17 00:00:00 2001
+From: John-Michael Mulesa <thesaxophonist@gmail.com>
+Date: Fri, 9 Oct 2026 07:17:29 -0400
+Subject: [PATCH 1/4] [native] Fix building DXVK Native on macOS
+
+- util_win32_compat.h: also provide the LoadLibrary/GetProcAddress shims
+  on __APPLE__, which does not define __unix__.
+- util_math.h: include <cstddef> for size_t instead of relying on a
+  transitive include (libc++).
+- meson: Apple's ld64 does not accept GNU --version-script, so skip the
+  .sym version scripts when targeting darwin.
+- dxvk_bind_mask.h: uintptr_t is unsigned long on macOS while uint64_t
+  is unsigned long long, so bit::tzcnt(mask) was ambiguous. Select the
+  overload by width.
+
+(cherry picked from commit dd1af1d412a8b77884df969f4973cbce78cab378)
+---
+ src/d3d10/meson.build        | 4 +++-
+ src/d3d11/meson.build        | 4 +++-
+ src/d3d8/meson.build         | 4 +++-
+ src/d3d9/meson.build         | 4 +++-
+ src/dxgi/meson.build         | 4 +++-
+ src/dxvk/dxvk_bind_mask.h    | 5 ++++-
+ src/util/util_math.h         | 1 +
+ src/util/util_win32_compat.h | 2 +-
+ subprojects/.wraplock        | 0
+ 9 files changed, 21 insertions(+), 7 deletions(-)
+ create mode 100644 subprojects/.wraplock
+
+diff --git a/src/d3d10/meson.build b/src/d3d10/meson.build
+index 6a690c43..8006cf7e 100644
+--- a/src/d3d10/meson.build
++++ b/src/d3d10/meson.build
+@@ -10,7 +10,9 @@ d3d10_core_link_depends = []
+ if platform == 'windows'
+   d3d10_d3d11_dep = lib_d3d11
+ else
+-  d3d10_core_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d10core.sym') ]
++  if platform != 'darwin'
++    d3d10_core_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d10core.sym') ]
++  endif
+   d3d10_core_link_depends += files('d3d10core.sym')
+   d3d10_d3d11_dep = d3d11_dep
+ endif
+diff --git a/src/d3d11/meson.build b/src/d3d11/meson.build
+index af2b7b27..00b1eb02 100644
+--- a/src/d3d11/meson.build
++++ b/src/d3d11/meson.build
+@@ -74,7 +74,9 @@ d3d11_link_depends = []
+ if platform == 'windows'
+   d3d11_dxgi_deps = [ lib_gdi32, lib_dxgi ]
+ else
+-  d3d11_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d11.sym') ]
++  if platform != 'darwin'
++    d3d11_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d11.sym') ]
++  endif
+   d3d11_link_depends += files('d3d11.sym')
+   d3d11_dxgi_deps = [ dxgi_dep ]
+ endif
+diff --git a/src/d3d8/meson.build b/src/d3d8/meson.build
+index 19064da7..0e68c570 100644
+--- a/src/d3d8/meson.build
++++ b/src/d3d8/meson.build
+@@ -19,7 +19,9 @@ d3d8_link_depends = []
+ 
+ if platform != 'windows'
+   lib_d3d9 = d3d9_dep
+-  d3d8_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d8.sym') ]
++  if platform != 'darwin'
++    d3d8_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d8.sym') ]
++  endif
+   d3d8_link_depends += files('d3d8.sym')
+ endif
+ 
+diff --git a/src/d3d9/meson.build b/src/d3d9/meson.build
+index 53d23a64..4638f4b9 100644
+--- a/src/d3d9/meson.build
++++ b/src/d3d9/meson.build
+@@ -56,7 +56,9 @@ d3d9_ld_args      = []
+ d3d9_link_depends = []
+ 
+ if platform != 'windows'
+-  d3d9_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d9.sym') ]
++  if platform != 'darwin'
++    d3d9_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d9.sym') ]
++  endif
+   d3d9_link_depends += files('d3d9.sym')
+ endif
+ 
+diff --git a/src/dxgi/meson.build b/src/dxgi/meson.build
+index a9ed5e7d..7a7df0db 100644
+--- a/src/dxgi/meson.build
++++ b/src/dxgi/meson.build
+@@ -20,7 +20,9 @@ dxgi_extra_dep    = []
+ if platform == 'windows'
+   dxgi_extra_dep    += [ cpp.find_library('version') ]
+ else
+-  dxgi_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'dxgi.sym') ]
++  if platform != 'darwin'
++    dxgi_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'dxgi.sym') ]
++  endif
+   dxgi_link_depends += files('dxgi.sym')
+ endif
+ 
+diff --git a/src/dxvk/dxvk_bind_mask.h b/src/dxvk/dxvk_bind_mask.h
+index e85fa075..af84001d 100644
+--- a/src/dxvk/dxvk_bind_mask.h
++++ b/src/dxvk/dxvk_bind_mask.h
+@@ -144,7 +144,10 @@ namespace dxvk {
+       if (!mask)
+         return -1;
+       
+-      return BitCount * intId + bit::tzcnt(mask);
++      // uintptr_t is not uint64_t on every LP64 target (macOS: unsigned long
++      // vs unsigned long long), so pick the bit::tzcnt overload by width.
++      using TzcntType = std::conditional_t<sizeof(MaskType) == 8, uint64_t, uint32_t>;
++      return BitCount * intId + bit::tzcnt(TzcntType(mask));
+     }
+ 
+     bool operator == (const DxvkBindingSet& other) const {
+diff --git a/src/util/util_math.h b/src/util/util_math.h
+index 9276d933..a712940d 100644
+--- a/src/util/util_math.h
++++ b/src/util/util_math.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <cmath>
++#include <cstddef>
+ 
+ namespace dxvk {
+   
+diff --git a/src/util/util_win32_compat.h b/src/util/util_win32_compat.h
+index b706dca6..7a4b4a1e 100644
+--- a/src/util/util_win32_compat.h
++++ b/src/util/util_win32_compat.h
+@@ -1,6 +1,6 @@
+ #pragma once
+ 
+-#if defined(__unix__)
++#if defined(__unix__) || defined(__APPLE__)
+ 
+ #include <windows.h>
+ #include <dlfcn.h>
+diff --git a/subprojects/.wraplock b/subprojects/.wraplock
+new file mode 100644
+index 00000000..e69de29b
+-- 
+2.46.0
+

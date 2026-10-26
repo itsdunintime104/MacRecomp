@@ -1,0 +1,63 @@
+From dbda62da2c7de454f56f3113920ea6f863695259 Mon Sep 17 00:00:00 2001
+From: John-Michael Mulesa <thesaxophonist@gmail.com>
+Date: Fri, 9 Oct 2026 08:42:29 -0400
+Subject: [PATCH 3/4] [dxvk] Clip depth through depth clamp when
+ VK_EXT_depth_clip_enable is absent
+
+DXVK always enables depth clamp and relies on VK_EXT_depth_clip_enable to
+turn clipping back on. Without the extension, the depth-clip struct was
+still chained (invalid usage) and depth clamp stayed on, so geometry past
+the far plane was clamped instead of clipped. Fall back to
+depthClampEnable = !depthClip and only chain the struct when supported.
+
+(cherry picked from commit 84e51ace938fc7ba6f7c943c49a5f178fc48c8f6)
+---
+ src/dxvk/dxvk_graphics.cpp | 10 ++++++++--
+ src/dxvk/dxvk_shader.cpp   |  5 +++--
+ 2 files changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/src/dxvk/dxvk_graphics.cpp b/src/dxvk/dxvk_graphics.cpp
+index edabf4fc..02528ca9 100644
+--- a/src/dxvk/dxvk_graphics.cpp
++++ b/src/dxvk/dxvk_graphics.cpp
+@@ -600,8 +600,14 @@ namespace dxvk {
+ 
+     // Set up depth clip state. Require depth clip support,
+     // this is *not* equivalent to disabling depth clamp.
+-    rsDepthClipInfo.pNext = std::exchange(rsInfo.pNext, &rsDepthClipInfo);
+-    rsDepthClipInfo.depthClipEnable = state.rs.depthClipEnable();
++    if (device->features().extDepthClipEnable.depthClipEnable) {
++      rsDepthClipInfo.pNext = std::exchange(rsInfo.pNext, &rsDepthClipInfo);
++      rsDepthClipInfo.depthClipEnable = state.rs.depthClipEnable();
++    } else {
++      // Without VK_EXT_depth_clip_enable, depth clipping follows depth
++      // clamp: clamp exactly when the API asks for clipping to be off.
++      rsInfo.depthClampEnable = !state.rs.depthClipEnable();
++    }
+ 
+     // Set up conservative rasterization if requested by the application.
+     if (state.rs.conservativeMode() != VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT) {
+diff --git a/src/dxvk/dxvk_shader.cpp b/src/dxvk/dxvk_shader.cpp
+index a133519d..d496c32c 100644
+--- a/src/dxvk/dxvk_shader.cpp
++++ b/src/dxvk/dxvk_shader.cpp
+@@ -395,13 +395,14 @@ namespace dxvk {
+     VkPipelineRasterizationDepthClipStateCreateInfoEXT rsDepthClipInfo = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT };
+ 
+     VkPipelineRasterizationStateCreateInfo rsInfo = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+-    rsInfo.depthClampEnable   = VK_TRUE;
++    rsInfo.depthClampEnable   = m_device->features().extDepthClipEnable.depthClipEnable;
+     rsInfo.rasterizerDiscardEnable = VK_FALSE;
+     rsInfo.polygonMode        = VK_POLYGON_MODE_FILL;
+     rsInfo.lineWidth          = 1.0f;
+ 
+     // Only use the fixed depth clip state if we can't make it dynamic
+-    if (!m_device->features().extExtendedDynamicState3.extendedDynamicState3DepthClipEnable) {
++    if (m_device->features().extDepthClipEnable.depthClipEnable
++     && !m_device->features().extExtendedDynamicState3.extendedDynamicState3DepthClipEnable) {
+       rsDepthClipInfo.pNext = std::exchange(rsInfo.pNext, &rsDepthClipInfo);
+       rsDepthClipInfo.depthClipEnable = VK_TRUE;
+     }
+-- 
+2.46.0
+

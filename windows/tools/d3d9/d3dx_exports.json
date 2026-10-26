@@ -1,0 +1,86 @@
+[
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateTextureFromFileInMemory",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateTextureFromFileInMemory"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXSaveSurfaceToFileInMemory",
+    "ordinal": 0,
+    "fn": "thunk_D3DXSaveSurfaceToFileInMemory"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXMatrixMultiply",
+    "ordinal": 0,
+    "fn": "thunk_D3DXMatrixMultiply"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXMatrixLookAtLH",
+    "ordinal": 0,
+    "fn": "thunk_D3DXMatrixLookAtLH"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateTextureFromFileInMemoryEx",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateTextureFromFileInMemoryEx"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateCubeTextureFromFileInMemory",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateCubeTextureFromFileInMemory"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateEffectFromFileA",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateEffectFromFileA"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateEffect",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateEffect"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateEffectCompiler",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateEffectCompiler"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateFontA",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateFontA"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateRenderToSurface",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateRenderToSurface"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCreateBuffer",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCreateBuffer"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXCompileShader",
+    "ordinal": 0,
+    "fn": "thunk_D3DXCompileShader"
+  },
+  {
+    "dll": "d3dx9_41.dll",
+    "name": "D3DXGetShaderConstantTable",
+    "ordinal": 0,
+    "fn": "thunk_D3DXGetShaderConstantTable"
+  }
+]

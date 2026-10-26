@@ -1,0 +1,73 @@
+From 9bb48916c0940b815f32850a45c4a0318a690ba9 Mon Sep 17 00:00:00 2001
+From: John-Michael Mulesa <thesaxophonist@gmail.com>
+Date: Fri, 9 Oct 2026 08:59:02 -0400
+Subject: [PATCH 2/4] [native] Find the executable and the Vulkan loader on
+ macOS
+
+- util_env: getExePath() had no __APPLE__ branch and fell off the end of a
+  non-void function, which traps on the first Direct3DCreate9. Use
+  _NSGetExecutablePath.
+- vulkan_loader: also try libvulkan.1.dylib / libvulkan.dylib on macOS.
+
+---
+ src/util/util_env.cpp        | 11 +++++++++++
+ src/vulkan/vulkan_loader.cpp |  7 +++++--
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/util/util_env.cpp b/src/util/util_env.cpp
+index 912d6ec9..e3a82f2b 100644
+--- a/src/util/util_env.cpp
++++ b/src/util/util_env.cpp
+@@ -10,6 +10,9 @@
+ #include <sys/sysctl.h>
+ #include <unistd.h>
+ #include <limits.h>
++#elif defined(__APPLE__)
++#include <mach-o/dyld.h>
++#include <limits.h>
+ #endif
+ 
+ #include "util_env.h"
+@@ -102,6 +105,14 @@ namespace dxvk::env {
+     size_t count = readlink("/proc/self/exe", exePath.data(), exePath.size());
+ 
+     return std::string(exePath.begin(), exePath.begin() + count);
++#elif defined(__APPLE__)
++    std::array<char, PATH_MAX> exePath = {};
++    uint32_t size = exePath.size();
++
++    if (_NSGetExecutablePath(exePath.data(), &size) != 0)
++      return "";
++
++    return std::string(exePath.data());
+ #elif defined(__FreeBSD__)
+     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, getpid()};
+     char exePath[PATH_MAX] = {};
+diff --git a/src/vulkan/vulkan_loader.cpp b/src/vulkan/vulkan_loader.cpp
+index f9d1e98d..a9d8ffb9 100644
+--- a/src/vulkan/vulkan_loader.cpp
++++ b/src/vulkan/vulkan_loader.cpp
+@@ -10,15 +10,18 @@
+ namespace dxvk::vk {
+ 
+   static std::pair<HMODULE, PFN_vkGetInstanceProcAddr> loadVulkanLibrary() {
+-    static const std::array<const char*, 2> dllNames = {{
++    static const std::array dllNames = {
+ #ifdef _WIN32
+       "winevulkan.dll",
+       "vulkan-1.dll",
++#elif defined(__APPLE__)
++      "libvulkan.1.dylib",
++      "libvulkan.dylib",
+ #else
+       "libvulkan.so",
+       "libvulkan.so.1",
+ #endif
+-    }};
++    };
+ 
+     for (auto dllName : dllNames) {
+       HMODULE library = LoadLibraryA(dllName);
+-- 
+2.46.0
+
