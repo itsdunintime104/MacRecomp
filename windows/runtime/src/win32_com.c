@@ -119,9 +119,24 @@ static void imp_CoSetProxyBlanket(void)
 
 /* ---- oleaut32 ---------------------------------------------------------- */
 
-/* BSTR SysAllocString(const OLECHAR *). A BSTR is UTF-16 preceded by its
- * byte length (4 bytes) and followed by a 2-byte NUL; the BSTR points just
- * after the length. */
+/* A BSTR is UTF-16 preceded by its byte length (4 bytes) and followed by a
+ * 2-byte NUL; the BSTR points just after the length. Returns a guest BSTR
+ * holding the len bytes at utf16, or 0. Call from a thunk: the heap site is
+ * the guest return address. win32_wmi.c uses it too. */
+uint32_t w32_bstr_alloc(const void *utf16, uint32_t len)
+{
+    g_heap_site = MEM32(g_esp);
+    uint32_t block = guest_malloc(4u + len + 2u);
+    g_heap_site = 0;
+    if (block == 0)
+        return 0;
+    MEM32(block) = len;
+    memcpy(guest_ptr(block + 4u), utf16, len);
+    MEM16(block + 4u + len) = 0;
+    return block + 4u;
+}
+
+/* BSTR SysAllocString(const OLECHAR *) */
 static void imp_SysAllocString(void)
 {
     uint32_t src = W32_ARG(0), bstr = 0;
@@ -129,15 +144,7 @@ static void imp_SysAllocString(void)
         uint32_t len = 0;
         while (MEM16(src + len) != 0)
             len += 2u;
-        g_heap_site = MEM32(g_esp);
-        uint32_t block = guest_malloc(4u + len + 2u);
-        g_heap_site = 0;
-        if (block != 0) {
-            MEM32(block) = len;
-            memcpy(guest_ptr(block + 4u), guest_ptr(src), len);
-            MEM16(block + 4u + len) = 0;
-            bstr = block + 4u;
-        }
+        bstr = w32_bstr_alloc(guest_ptr(src), len);
     }
     W32_RETURN(1, bstr);
 }

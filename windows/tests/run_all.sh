@@ -108,6 +108,12 @@ def_win32_input() {
         $S/guest_mem.c $S/host_funcs.c $S/guest_call.c $S/recomp_glue.c)
     LIBS=("${SDL_L[@]}"); ENVS=(SDL_VIDEODRIVER=dummy)
 }
+def_win32_wmi() {
+    FLAGS=("${COMMON[@]}" "${SDL_I[@]}" tests/test_win32_wmi.c $R/win32_wmi.c $R/win32_com.c
+        $R/com_guest.c $R/frame_trace.c $R/win32_input.c $R/input_script.c
+        $S/guest_mem.c $S/guest_heap.c $S/dlmalloc.c $S/guest_call.c $S/host_funcs.c $S/recomp_glue.c)
+    LIBS=("${SDL_L[@]}"); ENVS=(SDL_VIDEODRIVER=dummy)
+}
 def_win32_winmm() {
     FLAGS=("${COMMON[@]}" tests/test_win32_winmm.c $R/win32_winmm.c $R/win32_sync.c
         $R/win32_core.c $R/win32_unsupported.c
@@ -178,7 +184,7 @@ def_analyze_pe() {
     PYTEST=tests/test_analyze_pe.py
 }
 
-C_TESTS="frame_trace win32_core win32_mem win32_sync win32_fs win32_ui win32_input win32_net win32_winmm win32_bink win32_audio win32_xaudio2 win32_dsound com_guest d3d9_hud d3d9_guest d3dx_shader d3dx_misc d3d9_e2e"
+C_TESTS="frame_trace win32_core win32_mem win32_sync win32_fs win32_ui win32_input win32_wmi win32_net win32_winmm win32_bink win32_audio win32_xaudio2 win32_dsound com_guest d3d9_hud d3d9_guest d3dx_shader d3dx_misc d3d9_e2e"
 GPU_TESTS=" d3dx_misc d3d9_e2e "
 PY_TESTS="analyze_pe"
 # shellcheck source=/dev/null
