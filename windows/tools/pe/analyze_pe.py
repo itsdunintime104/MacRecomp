@@ -424,7 +424,7 @@ def find_functions(code: Code, candidates: Set[int],
                 # Straight-line code runs into a pointer-evidenced start:
                 # the dword matched by chance (strings such as "ket\0" are
                 # code addresses; a function can run from `mov ecx,[eax+0x340]`
-                # into FUN_0066fffe). Junk orphans that would run into a
+                # into the next function). Junk orphans that would run into a
                 # real start are dropped first (_runs_into_data).
                 t = va + n
                 if (why.get(t) in _POINTER
@@ -555,9 +555,8 @@ def data_pointers(sections: Sequence[tuple[bytes, int, bool]],
     """Members of targets held by an aligned dword of a (bytes, VA,
     writable) section. In a writable section the dword counts only next to
     another member (a table of function pointers): alone, or among other
-    values, it is as likely a bit mask or a counter. A mask such as 0x00AAAAFE
-    and the 16-bit count 00A8 00A9 00AA 00AB in .data land inside
-    FUN_00aa86b6."""
+    values, it is as likely a bit mask or a counter: a mask or a run of
+    16-bit counts in .data can read as an address inside a function."""
     found: set[int] = set()
     for raw, va, writable in sections:
         skew = -va % 4
