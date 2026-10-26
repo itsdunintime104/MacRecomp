@@ -1,0 +1,11 @@
+--- a/src/kosmickrisp/vulkan/kk_queue.c	2026-10-24 13:04:53
++++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-10-24 13:04:53
+@@ -93,6 +93,8 @@
+          mtl_command_queue_signal_drawable(queue->mtl_handle,
+                                            cmd_buffer->drawable);
+          mtl_drawable_present(cmd_buffer->drawable);
++         /* Drop the reference kk_encode_drawable_present took (kk_wsi.c). */
++         mtl_release(cmd_buffer->drawable);
+          cmd_buffer->drawable = NULL;
+       }
+    }

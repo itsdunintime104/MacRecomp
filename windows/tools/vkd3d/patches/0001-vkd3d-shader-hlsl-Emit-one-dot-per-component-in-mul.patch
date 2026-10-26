@@ -1,0 +1,76 @@
+diff --git a/libs/vkd3d-shader/hlsl.y b/libs/vkd3d-shader/hlsl.y
+index 673b139..b94de6b 100644
+--- a/libs/vkd3d-shader/hlsl.y
++++ b/libs/vkd3d-shader/hlsl.y
+@@ -4441,7 +4441,10 @@ static bool intrinsic_mul(struct hlsl_ctx *ctx,
+     struct hlsl_ir_node *arg1 = params->args[0], *arg2 = params->args[1], *cast1, *cast2;
+     enum hlsl_base_type base = expr_common_base_type(arg1->data_type->e.numeric.type, arg2->data_type->e.numeric.type);
+     struct hlsl_type *cast_type1 = arg1->data_type, *cast_type2 = arg2->data_type, *matrix_type, *ret_type;
+-    unsigned int i, j, k, vect_count = 0;
++    struct hlsl_ir_node *row_vec = NULL, *col_vec = NULL;
++    struct hlsl_ir_var *row_var = NULL, *col_var = NULL;
++    struct hlsl_deref row_deref, col_deref;
++    unsigned int i, j, k, inner, vect_count = 0;
+     struct hlsl_deref var_deref;
+     struct hlsl_ir_node *load;
+     struct hlsl_ir_var *var;
+@@ -4484,12 +4487,59 @@ static bool intrinsic_mul(struct hlsl_ctx *ctx,
+         return false;
+     hlsl_deref_init_simple(&var_deref, var);
+ 
++    /* Emit one dot product per output component where both operands are a
++     * single register, as the native compiler does (dp3/dp4): the vector
++     * operand itself, and a column of a column-major matrix (its path index
++     * selects one register). A MUL + ADD chain is the same value in exact
++     * arithmetic but rounds differently, so shaders that recompute one
++     * position disagree with each other. Other shapes keep the chain. */
++    inner = cast_type1->e.numeric.dimx < cast_type2->e.numeric.dimy
++            ? cast_type1->e.numeric.dimx : cast_type2->e.numeric.dimy;
++    if (inner >= 2 && inner <= 4)
++    {
++        struct hlsl_type *vec_type = hlsl_get_vector_type(ctx, base, inner);
++
++        if (arg1->data_type->class == HLSL_CLASS_VECTOR && arg1->data_type->e.numeric.dimx == inner)
++            row_vec = add_implicit_conversion(ctx, params->instrs, arg1, vec_type, loc);
++        else if (arg1->data_type->class == HLSL_CLASS_MATRIX && hlsl_type_is_row_major(cast_type1)
++                && cast_type1->e.numeric.dimx == inner && (row_var = hlsl_new_synthetic_var(ctx, "mul_a", cast_type1, loc)))
++        {
++            hlsl_block_add_simple_store(ctx, params->instrs, row_var, cast1);
++            hlsl_deref_init_simple(&row_deref, row_var);
++        }
++        if (arg2->data_type->class == HLSL_CLASS_VECTOR && arg2->data_type->e.numeric.dimx == inner)
++            col_vec = add_implicit_conversion(ctx, params->instrs, arg2, vec_type, loc);
++        else if (arg2->data_type->class == HLSL_CLASS_MATRIX && !hlsl_type_is_row_major(cast_type2)
++                && cast_type2->e.numeric.dimy == inner && (col_var = hlsl_new_synthetic_var(ctx, "mul_b", cast_type2, loc)))
++        {
++            hlsl_block_add_simple_store(ctx, params->instrs, col_var, cast2);
++            hlsl_deref_init_simple(&col_deref, col_var);
++        }
++    }
++
+     for (i = 0; i < matrix_type->e.numeric.dimx; ++i)
+     {
+         for (j = 0; j < matrix_type->e.numeric.dimy; ++j)
+         {
+             struct hlsl_ir_node *instr = NULL;
+ 
++            if ((row_vec || row_var) && (col_vec || col_var))
++            {
++                struct hlsl_ir_node *row = row_vec, *col = col_vec;
++
++                if (!row)
++                    row = hlsl_block_add_load_index(ctx, params->instrs, &row_deref,
++                            hlsl_block_add_uint_constant(ctx, params->instrs, j, loc), loc);
++                if (!col)
++                    col = hlsl_block_add_load_index(ctx, params->instrs, &col_deref,
++                            hlsl_block_add_uint_constant(ctx, params->instrs, i, loc), loc);
++                if (!(instr = add_binary_dot_expr(ctx, params->instrs, row, col, loc)))
++                    return false;
++                hlsl_block_add_store_component(ctx, params->instrs, &var_deref,
++                        j * matrix_type->e.numeric.dimx + i, instr);
++                continue;
++            }
++
+             for (k = 0; k < cast_type1->e.numeric.dimx && k < cast_type2->e.numeric.dimy; ++k)
+             {
+                 struct hlsl_ir_node *value1, *value2, *mul;

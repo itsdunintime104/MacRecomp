@@ -1,0 +1,13 @@
+--- a/src/kosmickrisp/bridge/mtl_render_state.m	2026-10-24 14:51:26
++++ b/src/kosmickrisp/bridge/mtl_render_state.m	2026-10-24 14:51:26
+@@ -22,7 +22,9 @@
+ mtl_new_render_pass_descriptor(void)
+ {
+    @autoreleasepool {
+-      return [[MTL4RenderPassDescriptor new] init];
++      /* +new already runs -init; a second -init leaks the colorAttachments
++       * array (MTLRenderPassColorAttachmentDescriptorArrayInternal). */
++      return [MTL4RenderPassDescriptor new];
+    }
+ }
+ 

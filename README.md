@@ -73,6 +73,7 @@ See `docs/BUILDING.md` in [WizardBrick-Recomp](https://github.com/itsdunintime10
 | `tools/perf/` | `plot_frames`, which turns a frame-time CSV into a chart |
 | `runtime/` | startup, guest memory, import replacements, SDL2 front end, Steam stand-in. `hud_core.c` holds the frame-time overlay logic; `frontend_hud.c` draws it with OpenGL, and a game repo can add another draw backend |
 | `build/Makefile` | compiles and links the generated C and the runtime |
+| `windows/` | the shared Windows (PE32) runtime, tools, tests, build rules and setup script for Windows game repos (`windows/README.md`) |
 | `tests/` | translator and runtime tests, including lifter tests for code forms the Windows game uses (`test_seh_helpers.py`, `test_lift_import_tail.py`, `test_lift_entry_zf.py`, `test_lift_switch_byte_map.py`, `test_lift_fuzz_forms.py`) |
 
 ## Checks
