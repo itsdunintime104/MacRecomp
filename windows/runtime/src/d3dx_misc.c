@@ -156,12 +156,14 @@ static HRESULT texture_from_tga(IDirect3DDevice9 *dev, const uint8_t *f, uint32_
  * A DDS file is "DDS ", a 124-byte DDS_HEADER (DDS_PIXELFORMAT at +72), then
  * each face (one, or six for a cube map in +X -X +Y -Y +Z -Z order) as its
  * mip levels, largest first, tightly packed. Formats: DXT1, DXT3 and DXT5 by
- * FourCC, and the uncompressed layouts in g_dds_masks. The texture gets the
- * file's format and size; its level count follows the MipLevels argument
+ * FourCC, the float formats in g_dds_float by their D3DFORMAT number in the
+ * FourCC field, and the uncompressed layouts in g_dds_masks. The texture gets
+ * the file's format and size; its level count follows the MipLevels argument
  * (D3DX_DEFAULT or 0: the full chain, D3DX_FROM_FILE: the file's levels).
  * Levels the file does not hold are box-filtered from the level above, as
  * D3DX's default mip filter does (DXT levels are decoded, filtered and
- * encoded again). Resizing, format conversion, colour keys and skipped DDS
+ * encoded again). The filter works on 8-bit channels, so a float texture gets
+ * only the levels the file holds. Resizing, format conversion, colour keys and skipped DDS
  * levels are not implemented and fail with an UNSUPPORTED line. */
 
 #define D3DX_DEFAULT_ARG 0xFFFFFFFFu   /* D3DX_DEFAULT */
@@ -203,11 +205,21 @@ static const struct {
     {8, 0, 0, 0, 0xFFu, D3DFMT_A8},
 };
 
+/* Float formats and their bytes per texel. */
+static const struct {
+    D3DFORMAT fmt;
+    uint32_t bytes;
+} g_dds_float[] = {
+    {D3DFMT_R16F, 2}, {D3DFMT_G16R16F, 4}, {D3DFMT_A16B16G16R16F, 8},
+    {D3DFMT_R32F, 4}, {D3DFMT_G32R32F, 8}, {D3DFMT_A32B32G32R32F, 16},
+};
+
 struct dds {
     uint32_t w, h, levels, faces;
     D3DFORMAT fmt;
     uint32_t block;  /* bytes per 4x4 block; 0 for an uncompressed format */
-    int mask;        /* g_dds_masks row of an uncompressed format */
+    uint32_t texel;  /* bytes per texel of an uncompressed format */
+    int mask;        /* g_dds_masks row of an uncompressed format; -1 for a float format */
     int luminance;
     const uint8_t *data;
 };
@@ -223,7 +235,7 @@ static void level_rows(const struct dds *d, uint32_t w, uint32_t h, uint32_t *ro
         *row_bytes = (w + 3u) / 4u * d->block;
     } else {
         *rows = h;
-        *row_bytes = w * (g_dds_masks[d->mask].bits / 8u);
+        *row_bytes = w * d->texel;
     }
 }
 
@@ -260,8 +272,14 @@ static int dds_parse(const uint8_t *f, uint32_t size, struct dds *d, const char 
         else if (memcmp(cc, "DXT5", 4) == 0)
             d->fmt = D3DFMT_DXT5, d->block = 16;
         else {
-            diag_unsupported(fn, ret, "DDS FourCC %c%c%c%c", cc[0], cc[1], cc[2], cc[3]);
-            return -1;
+            d->mask = -1;
+            for (size_t i = 0; i < sizeof g_dds_float / sizeof g_dds_float[0]; i++)
+                if (rd32le(cc) == (uint32_t)g_dds_float[i].fmt)
+                    d->fmt = g_dds_float[i].fmt, d->texel = g_dds_float[i].bytes;
+            if (d->texel == 0) {
+                diag_unsupported(fn, ret, "DDS FourCC 0x%08X", rd32le(cc));
+                return -1;
+            }
         }
     } else {
         uint32_t bits = rd32le(f + 88), r = rd32le(f + 92), g = rd32le(f + 96), b = rd32le(f + 100),
@@ -278,6 +296,7 @@ static int dds_parse(const uint8_t *f, uint32_t size, struct dds *d, const char 
             return -1;
         }
         d->fmt = g_dds_masks[d->mask].fmt;
+        d->texel = g_dds_masks[d->mask].bits / 8u;
         d->luminance = (pf & DDPF_LUMINANCE) != 0;
     }
     uint64_t need = DDS_HEADER_SIZE;
@@ -569,7 +588,7 @@ static HRESULT texture_from_dds(IDirect3DDevice9 *dev, const uint8_t *f, uint32_
                       : a->mips < full                            ? a->mips
                                                                   : full;
     uint32_t from_file = d.levels < levels ? d.levels : levels;
-    if (a->mipfilter == D3DX_FILTER_NONE)
+    if (a->mipfilter == D3DX_FILTER_NONE || d.mask < 0)
         levels = from_file;
 
     void *tex = NULL;
