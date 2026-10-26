@@ -3,11 +3,13 @@
  * IDirectInputDevice8A), on SDL2. Contract: docs/WIN32_THUNKS.md,
  * win32_thunk.h, com_guest.h.
  *
- * Pads go through XInput only: EnumDevices lists the system keyboard and
- * mouse and no joysticks, so the game reads pads through XInput. Every pad is
- * an XInput gamepad, as every pad is an Xbox 360 pad in the engine's
- * frontend_pad.c; SDL's GameController layout is positional (A is the bottom
- * face button on a PlayStation pad too), so no per-pad handling is needed.
+ * Pads go through XInput only. Every pad is an XInput gamepad, as every pad
+ * is an Xbox 360 pad in the engine's frontend_pad.c; SDL's GameController
+ * layout is positional (A is the bottom face button on a PlayStation pad
+ * too), so no per-pad handling is needed. EnumDevices lists the system
+ * keyboard and mouse, then each pad as an Xbox 360 controller that
+ * CreateDevice does not open: a game finds pads that way and, through WMI
+ * (win32_wmi.c), learns they are XInput devices.
  *
  * Every offset below is from the mingw-w64 i686 headers (dinput.h, xinput.h,
  * DIRECTINPUT_VERSION 0x0800), printed with i686-w64-mingw32-gcc. The UI slice
@@ -83,8 +85,8 @@ static int s_xi_inited;
 static pthread_mutex_t s_xi_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Runs with s_xi_lock held: close unplugged pads, open new ones into the
- * first free user. Returns the pad of user, or NULL. */
-static SDL_GameController *xi_pad(uint32_t user)
+ * first free user. */
+static void xi_refresh(void)
 {
     if (!s_xi_inited) {
         s_xi_inited = 1;
@@ -113,7 +115,28 @@ static SDL_GameController *xi_pad(uint32_t user)
         if (!have && free_user >= 0)
             s_xi[free_user].gc = SDL_GameControllerOpen(j);
     }
+}
+
+/* Runs with s_xi_lock held. Returns the pad of user, or NULL. */
+static SDL_GameController *xi_pad(uint32_t user)
+{
+    xi_refresh();
     return user < XUSER_MAX_COUNT ? s_xi[user].gc : NULL;
+}
+
+/* The number of attached pads, at most XUSER_MAX_COUNT: what EnumDevices and
+ * WMI (win32_wmi.c) list. Pad n is the n-th SDL game controller in joystick
+ * index order, the order xi_refresh gives pads users, and a game takes its
+ * enumeration count as the XInput user. */
+uint32_t w32_input_pads(void)
+{
+    uint32_t n = 0;
+    pthread_mutex_lock(&s_xi_lock);
+    xi_refresh();
+    for (int j = 0; j < SDL_NumJoysticks() && n < XUSER_MAX_COUNT; j++)
+        n += SDL_IsGameController(j) ? 1u : 0u;
+    pthread_mutex_unlock(&s_xi_lock);
+    return n;
 }
 
 /* SDL sticks are Y down positive; XInput's are Y up positive. */
@@ -252,6 +275,11 @@ static void imp_XInputGetCapabilities(void)
 #define DI8DEVCLASS_GAMECTRL 4u
 #define DI8DEVTYPE_MOUSE 0x12u
 #define DI8DEVTYPE_KEYBOARD 0x13u
+#define DI8DEVTYPE_JOYSTICK 0x14u
+#define DI8DEVTYPE_GAMEPAD 0x15u
+#define DI8DEVTYPE_FLIGHT 0x17u
+#define DI8DEVTYPEGAMEPAD_STANDARD 2u
+#define DIDEVTYPE_HID 0x00010000u
 #define DI8DEVTYPEMOUSE_TRADITIONAL 2u
 #define DI8DEVTYPEKEYBOARD_PCENH 4u
 #define DIDC_ATTACHED 0x00000001u
@@ -935,8 +963,9 @@ static int di_type_matches(uint32_t filter, uint32_t devtype)
     case DI8DEVCLASS_ALL: return 1;
     case DI8DEVCLASS_POINTER: return (devtype & 0xFFu) == DI8DEVTYPE_MOUSE;
     case DI8DEVCLASS_KEYBOARD: return (devtype & 0xFFu) == DI8DEVTYPE_KEYBOARD;
-    case DI8DEVCLASS_DEVICE:
-    case DI8DEVCLASS_GAMECTRL: return 0;
+    case DI8DEVCLASS_GAMECTRL:
+        return (devtype & 0xFFu) >= DI8DEVTYPE_JOYSTICK && (devtype & 0xFFu) <= DI8DEVTYPE_FLIGHT;
+    case DI8DEVCLASS_DEVICE: return 0;
     default: return (filter & 0xFFu) == (devtype & 0xFFu);
     }
 }
@@ -950,7 +979,8 @@ static void guid_write(uint32_t a, const com_guid_t *g)
 }
 
 /* EnumDevices(DWORD dwDevType, LPDIENUMDEVICESCALLBACKA lpCallback,
- *             LPVOID pvRef, DWORD dwFlags): the system keyboard and mouse.
+ *             LPVOID pvRef, DWORD dwFlags): the system keyboard and mouse,
+ * then the pads (w32_input_pads) as Xbox 360 controllers.
  * The callback is BOOL CALLBACK cb(LPCDIDEVICEINSTANCEA, LPVOID). */
 static void IDirectInput8A_EnumDevices(void)
 {
@@ -964,22 +994,39 @@ static void IDirectInput8A_EnumDevices(void)
         {&GUID_SysKeyboard, DEV_KEYBOARD, "Keyboard", 6},
         {&GUID_SysMouse, DEV_MOUSE, "Mouse", 2},
     };
+    /* guidProduct of an Xbox 360 pad: Data1 is MAKELONG(VID 045E, PID 028E),
+     * the value a game matches against the WMI DeviceID. guidInstance is
+     * the pad number with "PADINST" after it: unique per pad, stable for the
+     * session. */
+    static const com_guid_t GUID_X360 = {
+        0x028E045E, 0x0000, 0x0000, {0x00, 0x00, 'P', 'I', 'D', 'V', 'I', 'D'}};
+    static const char PAD_NAME[] = "Controller (XBOX 360 For Windows)";
+    uint32_t pad_type = DI8DEVTYPE_GAMEPAD | (DI8DEVTYPEGAMEPAD_STANDARD << 8) | DIDEVTYPE_HID;
+    uint32_t n_devs = sizeof DEVS / sizeof DEVS[0];
+    uint32_t n_pads = di_type_matches(filter, pad_type) ? w32_input_pads() : 0;
     uint32_t saved = g_esp;
     uint32_t inst = (g_esp - DIDI_SIZE) & ~15u; /* below our frame */
     g_esp = inst;
-    for (size_t i = 0; i < sizeof DEVS / sizeof DEVS[0]; i++) {
-        uint32_t type = dev_type(DEVS[i].kind);
+    for (uint32_t i = 0; i < n_devs + n_pads; i++) {
+        int pad = i >= n_devs;
+        uint32_t type = pad ? pad_type : dev_type(DEVS[i].kind);
         if (!di_type_matches(filter, type) || (flags & DIEDFL_FORCEFEEDBACK))
             continue;
         memset(guest_ptr(inst), 0, DIDI_SIZE);
         MEM32(inst) = DIDI_SIZE;
-        guid_write(inst + DIDI_GUID_INSTANCE, DEVS[i].guid);
-        guid_write(inst + DIDI_GUID_PRODUCT, DEVS[i].guid);
+        if (pad) {
+            com_guid_t id = {i - n_devs, 0, 0, {0, 'P', 'A', 'D', 'I', 'N', 'S', 'T'}};
+            guid_write(inst + DIDI_GUID_INSTANCE, &id);
+            guid_write(inst + DIDI_GUID_PRODUCT, &GUID_X360);
+        } else {
+            guid_write(inst + DIDI_GUID_INSTANCE, DEVS[i].guid);
+            guid_write(inst + DIDI_GUID_PRODUCT, DEVS[i].guid);
+        }
         MEM32(inst + DIDI_DEVTYPE) = type;
-        strcpy((char *)guest_ptr(inst + DIDI_INSTANCE_NAME), DEVS[i].name);
-        strcpy((char *)guest_ptr(inst + DIDI_PRODUCT_NAME), DEVS[i].name);
+        strcpy((char *)guest_ptr(inst + DIDI_INSTANCE_NAME), pad ? PAD_NAME : DEVS[i].name);
+        strcpy((char *)guest_ptr(inst + DIDI_PRODUCT_NAME), pad ? PAD_NAME : DEVS[i].name);
         MEM16(inst + DIDI_USAGE_PAGE) = 1; /* generic desktop */
-        MEM16(inst + DIDI_USAGE) = DEVS[i].usage;
+        MEM16(inst + DIDI_USAGE) = pad ? 5 : DEVS[i].usage;
         uint32_t args[2] = {inst, ref};
         if (guest_call_cdecl(cb, 2, args) == DIENUM_STOP)
             break;

@@ -8,7 +8,7 @@ The Mac (Mach-O) games do not use this folder. The translator (`tools/xrecomp/`)
 
 | Path | Contents |
 |---|---|
-| `runtime/src`, `runtime/include` | Win32 slices (`win32_*`), COM objects, the D3D9 and D3DX layer (`d3d9_*`, `d3dx_*`, generated `gen_d3d9_guest.c`), the D3D9 overlay backend (`d3d9_hud.c`), frame trace, input scripts, the PE loader and the boot driver (`pe_boot.c`, `pe_boot_main.c`) |
+| `runtime/src`, `runtime/include` | Win32 slices (`win32_*`; `win32_wmi.c` answers the WMI query games use to find XInput pads), COM objects, the D3D9 and D3DX layer (`d3d9_*`, `d3dx_*`, generated `gen_d3d9_guest.c`), the D3D9 overlay backend (`d3d9_hud.c`), frame trace, input scripts, the PE loader and the boot driver (`pe_boot.c`, `pe_boot_main.c`) |
 | `runtime/include/game_hooks.h` | the C hooks a game can define (see [Game hooks](#game-hooks)) |
 | `tools/` | generic tools (see [Tools](#tools)) |
 | `tests/` | the runtime tests and `run_all.sh` |

@@ -297,7 +297,7 @@ static uint32_t g_guid_mouse, g_guid_kbd, g_guid_bad;
 /* LPDIENUMDEVICESCALLBACKA, called from guest code: stdcall, 2 arguments. */
 static struct {
     int n;
-    uint32_t d1[4], type[4], size[4], ref;
+    uint32_t d1[4], product[4], type[4], size[4], ref;
     char name[4][16];
     uint32_t stop_after;
 } g_enum;
@@ -308,6 +308,7 @@ static void enum_cb(void)
     if (i < 4) {
         g_enum.size[i] = MEM32(inst);
         g_enum.d1[i] = MEM32(inst + 4);
+        g_enum.product[i] = MEM32(inst + 0x14);
         g_enum.type[i] = MEM32(inst + 0x24);
         strncpy(g_enum.name[i], (const char *)guest_ptr(inst + 0x28), 15);
     }
@@ -376,9 +377,14 @@ static void test_dinput(void)
     CHECK(CALL(method(di, 0), di, iid_a, out) == 0 && MEM32(out) == di);
     CHECK(CALL(method(di, 2), di) == 1);
 
-    /* EnumDevices: keyboard and mouse, nothing else. */
+    /* EnumDevices: keyboard and mouse, then the pads attached to this machine
+     * (none on most), at most 4. */
+    int real = 0;
+    for (int j = 0; j < SDL_NumJoysticks(); j++)
+        real += SDL_IsGameController(j);
+    real = real < 4 ? real : 4;
     enum_devices(di, 0 /* DI8DEVCLASS_ALL */, 1 /* DIEDFL_ATTACHEDONLY */, 0);
-    CHECK(g_enum.n == 2 && g_enum.ref == 0x1234u);
+    CHECK(g_enum.n == 2 + real && g_enum.ref == 0x1234u);
     CHECK(g_enum.d1[0] == 0x6F1D2B61u && g_enum.type[0] == 0x413 && g_enum.size[0] == 580);
     CHECK(g_enum.d1[1] == 0x6F1D2B60u && g_enum.type[1] == 0x212 && g_enum.size[1] == 580);
     CHECK(strcmp(g_enum.name[0], "Keyboard") == 0 && strcmp(g_enum.name[1], "Mouse") == 0);
@@ -388,8 +394,38 @@ static void test_dinput(void)
     CHECK(g_enum.n == 1 && g_enum.d1[0] == 0x6F1D2B60u);
     enum_devices(di, 0x13 /* DI8DEVTYPE_KEYBOARD */, 0, 0);
     CHECK(g_enum.n == 1 && g_enum.d1[0] == 0x6F1D2B61u);
-    enum_devices(di, 4 /* DI8DEVCLASS_GAMECTRL */, 0, 0);
+    enum_devices(di, 4 /* DI8DEVCLASS_GAMECTRL */, 1, 0);
+    CHECK(g_enum.n == real);
+    enum_devices(di, 1 /* DI8DEVCLASS_DEVICE */, 1, 0);
     CHECK(g_enum.n == 0);
+    if (real < 4) {
+        /* A virtual pad is one more game controller, an Xbox 360 pad. */
+        SDL_VirtualJoystickDesc desc;
+        SDL_zero(desc);
+        desc.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION;
+        desc.type = SDL_JOYSTICK_TYPE_GAMECONTROLLER;
+        desc.naxes = SDL_CONTROLLER_AXIS_MAX;
+        desc.nbuttons = SDL_CONTROLLER_BUTTON_MAX;
+        int index = SDL_JoystickAttachVirtualEx(&desc);
+        CHECK(index >= 0 && SDL_IsGameController(index));
+        enum_devices(di, 4, 1, 0);
+        CHECK(g_enum.n == real + 1);
+        CHECK(g_enum.product[real] == 0x028E045Eu && g_enum.size[real] == 580);
+        CHECK(g_enum.type[real] == 0x10215u); /* GAMEPAD, STANDARD, HID */
+        CHECK(g_enum.d1[real] == (uint32_t)real);
+        CHECK(strcmp(g_enum.name[real], "Controller (XBO") == 0); /* 15 chars kept */
+        enum_devices(di, 0x15 /* DI8DEVTYPE_GAMEPAD */, 1, 0);
+        CHECK(g_enum.n == real + 1);
+        enum_devices(di, 0, 1, 0);
+        CHECK(g_enum.n == 3 + real && g_enum.type[0] == 0x413 && g_enum.type[1] == 0x212);
+        enum_devices(di, 4, 0x100 /* DIEDFL_FORCEFEEDBACK */, 0);
+        CHECK(g_enum.n == 0);
+        enum_devices(di, 3 /* DI8DEVCLASS_KEYBOARD */, 1, 0);
+        CHECK(g_enum.n == 1 && g_enum.d1[0] == 0x6F1D2B61u);
+        SDL_JoystickDetachVirtual(index);
+        enum_devices(di, 4, 1, 0);
+        CHECK(g_enum.n == real);
+    }
 
     CHECK(CALL(method(di, 5), di, g_guid_kbd) == DI_OK);
     CHECK(CALL(method(di, 5), di, g_guid_mouse) == DI_OK);
