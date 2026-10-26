@@ -18,8 +18,8 @@ import os
 import re
 import struct
 
-from .disasm import Instruction, Operand, LOOP_JUMPS
-from .config import is_code_address, is_data_address, va_to_file_offset
+from .disasm import Operand, LOOP_JUMPS
+from .config import is_code_address, va_to_file_offset
 
 # Function export names of the Windows libraries the host exe links
 # (kernel32/user32/gdi32/advapi32/winmm/ws2_32/ole32/dbghelp/...). A guest
@@ -236,19 +236,6 @@ def _st(macro, addr, value):
     return f"{_GUEST_STORE[macro]}({addr}, {value});"
 
 
-def _fmt_fpu_operand(op):
-    """Format an x87 memory or stack-register operand for reading."""
-    if op.type == "mem":
-        return _ld("MEMD" if op.mem_size == 8 else "MEMF", _fmt_mem(op))
-    if op.type == "reg":
-        name = op.reg or ""
-        if name == "st":
-            return "fp_st(0)"
-        if name.startswith("st(") and name.endswith(")"):
-            return f"fp_st({name[3:-1]})"
-    return None
-
-
 def _fmt_mem(op):
     """Format a memory operand as a C expression (the address computation).
 
@@ -405,6 +392,9 @@ _RESULT_SNAPSHOT_SETTERS = frozenset({
 # the write because `sub eax, eax` would otherwise snapshot an operand it has
 # already destroyed.
 _RESULT_SRC_SETTERS = frozenset({"add", "sub"})
+# Setters whose _fa snapshot is the full result, so PF is its low byte's
+# parity. Only pushfd uses it; the jp family has no derivation for them.
+_PF_FROM_RESULT = frozenset({"add", "sub", "and", "or", "xor"})
 
 # `pop ebp` and `leave` restore the CALLER's ebp into the local. Publish it,
 # because a call to a function with a prologue leaves g_ebp on that callee's
@@ -446,13 +436,12 @@ _EFLAGS_SETTERS = frozenset({
 # Instructions with undefined/unpredictable flags (clear tracking)
 _FLAGS_UNDEFINED = frozenset({
     "mul", "div", "idiv",  # Flags partially undefined
-    "rdtsc", "cpuid",      # Special instructions
-    # popfd REPLACES every flag with whatever was pushed. Its flags are not
-    # architecturally undefined -- they are simply not knowable from the
-    # instruction stream -- but the tracking action is the same: whatever the
-    # last comparison left is gone, and a jcc after it must not be resolved
-    # from that comparison. It used to sit in _EFLAGS_PRESERVE, next to
-    # pushfd, which does read-and-preserve and does belong there.
+    "rdtsc",               # Special instructions
+    # popfd REPLACES every flag with whatever was pushed: whatever the last
+    # comparison left is gone, and a jcc after it must not be resolved from
+    # that comparison. It used to sit in _EFLAGS_PRESERVE, next to pushfd,
+    # which does read-and-preserve and does belong there. The instruction
+    # loop then tracks popfd itself as the setter, reading the popped image.
     "popfd",
 })
 
@@ -462,7 +451,7 @@ _FLAGS_UNDEFINED = frozenset({
 _SSE_CMP_PRED = {"eq": 0, "lt": 1, "le": 2, "unord": 3,
                  "neq": 4, "nlt": 5, "nle": 6, "ord": 7}
 _SSE_CMP_NAMED = {f"cmp{p}{w}": (n, w) for p, n in _SSE_CMP_PRED.items()
-                  for w in ("ps", "ss")}
+                  for w in ("ps", "ss", "pd", "sd")}
 # SSE2 packed-integer two-operand ops: mnemonic -> recomp_types.h helper
 # taking (dst, src) and returning the new dst. pand/pandn/por/pxor reuse the
 # float-register bitwise helpers, which are the same 128-bit operation.
@@ -482,6 +471,7 @@ _SSE2_INT_BINARY = {
     "packssdw": "XMM_PACKSSDW",
     "pand": "XMM_AND", "pandn": "XMM_ANDN", "por": "XMM_OR",
     "pxor": "XMM_XOR", "pcmpgtd": "XMM_PCMPGTD",
+    "pmaxsw": "XMM_PMAXSW",
 }
 # Shifts take (dst, count): an imm8 or the low qword of an xmm/m128.
 _SSE2_SHIFT = {
@@ -510,6 +500,7 @@ _EFLAGS_PRESERVE = frozenset({
     # pushfd READS the flags and leaves them alone, so it belongs here.
     # popfd does NOT -- see _FLAGS_UNDEFINED.
     "pushfd", "pushal", "pushad", "popal", "popad",
+    "cpuid",
     "sgdt", "ljmp", "sfence",
     "stmxcsr", "ldmxcsr",
     # SSE scalar float
@@ -541,6 +532,7 @@ _EFLAGS_PRESERVE = frozenset({
     "movdqa", "movdqu", "movlpd", "movhpd", "maskmovdqu",
     "pmuludq", "psubq", "pslldq", "psrldq",
     "xorpd", "andpd", "orpd", "andnpd",
+    "unpcklpd", "unpckhpd", "shufpd",
     "cvtdq2ps", "cvtdq2pd", "cvtps2pd", "cvtpd2ps",
     # SSE/MMX integer
     "movd", "movq", "movntq",
@@ -585,6 +577,30 @@ def _has_xmm_operand(ops):
                for op in (ops or ()))
 
 
+def _pushfd_flags(flag_setter, flag_ops):
+    """The status-flag terms of a pushfd image, or [] when one is unknown.
+
+    Only CF/PF/ZF/SF/OF are modelled, from the conditions the jcc family
+    reads; AF reads 0. If any of the five has no derivation for the setter
+    the pushfd stays unhandled rather than pushing a guess. After popfd the
+    popped image in _fa is pushed back as it is, AF included.
+    """
+    if flag_setter == "popfd":
+        return ["_fa"]
+    parts = []
+    for jcc, bit in (("jb", 0x001), ("jp", 0x004), ("je", 0x040),
+                     ("js", 0x080), ("jo", 0x800)):
+        probe = _make_condition(jcc, flag_setter, flag_ops)
+        if probe is None and jcc == "jp" and flag_setter in _PF_FROM_RESULT:
+            # PF is the parity of the result's low byte, which these
+            # setters leave in _fa.
+            probe = ("RECOMP_PARITY8(_fa)", "")
+        if probe is None:
+            return []
+        parts.append(f"(({probe[0]}) ? 0x{bit:03X}u : 0u)")
+    return parts
+
+
 def _make_condition(jcc, flag_setter, flag_ops):
     """
     Generate a C condition expression for a jcc based on what set the flags.
@@ -615,6 +631,23 @@ def _make_condition(jcc, flag_setter, flag_ops):
             return f"({dest} != 0)", desc
         return None
 
+    # A join of `cmp X, 0` and `test m, imm` edges (translator
+    # _merge_zero_cmp_and_test): a test whose mask is all-ones on the cmp
+    # edge, where the snapshot left _fb = 0.
+    zero_or_test = flag_setter == "__test_or_zero"
+    if zero_or_test:
+        flag_setter = "test"
+
+    # A function entered with ZF from its callers (translator entry_zf): the
+    # entry snapshot holds (reg & mask) in _fa and the value in _fb. Only ZF
+    # is part of that contract.
+    if flag_setter == "__entry_zf":
+        if jcc in ("je", "jz"):
+            return "(_fa == _fb)", desc
+        if jcc in ("jne", "jnz"):
+            return "(_fa != _fb)", desc
+        return None
+
     # A cmp/test that is not fused with its jcc snapshots its operands into
     # _fa/_fb (zero-extended) and _fas/_fbs (sign-extended) at the point the
     # comparison happens. Use those rather than re-reading registers that may
@@ -623,6 +656,8 @@ def _make_condition(jcc, flag_setter, flag_ops):
     if flag_setter in ("cmp", "test", "bsf", "bsr") and len(flag_ops) >= 2:
         signed = (cmp_macro in SIGNED) or (test_macro in SIGNED)
         lhs, rhs = ("_fas", "_fbs") if signed else ("_fa", "_fb")
+        if zero_or_test:
+            rhs = f"({rhs} ? {rhs} : {'-1' if signed else '0xFFFFFFFFu'})"
     elif flag_setter in _RESULT_SNAPSHOT_SETTERS and flag_ops:
         # Same reason as the cmp/test snapshot above, for the family that
         # WRITES its destination rather than only reading it.
@@ -648,7 +683,7 @@ def _make_condition(jcc, flag_setter, flag_ops):
 
     # ── FPU compare-to-EFLAGS and sahf: no standard operands ──
     if flag_setter in ("fcompi", "fcomip", "fucomi", "fucompi",
-                        "fucomip", "fcomi", "sahf"):
+                        "fucomip", "fcomi", "sahf", "popfd"):
         # EFLAGS must survive later x87 status changes and AH writes.
         # FCOMI clears SF/OF; SAHF loads SF from AH and preserves OF.
         cf, zf, pf = "(_fa & 1u)", "(_fa & 0x40u)", "(_fa & 4u)"
@@ -905,6 +940,11 @@ def _make_condition(jcc, flag_setter, flag_ops):
         return None
 
     # ── adc/sbb: result-based (like add/sub but with carry) ──
+    #
+    # OF is in _fb, computed by the lift from the operands before the write
+    # (Lifter._adc_sbb_of). The lift emits it only when the function has a
+    # signed consumer, which is exactly when these conditions are asked for:
+    # the high half of a 64-bit compare, `sub lo; sbb hi; js; jg`.
     if flag_setter in ("adc", "sbb"):
         if jcc in ("je", "jz"):
             return f"({lhs} == 0)", desc
@@ -914,6 +954,13 @@ def _make_condition(jcc, flag_setter, flag_ops):
             return f"({slhs} < 0)", desc
         if jcc == "jns":
             return f"({slhs} >= 0)", desc
+        less = "((_fas < 0) != (_fb != 0))"
+        signed = {"jl": less, "jnge": less, "jge": f"!{less}", "jnl": f"!{less}",
+                  "jle": f"({less} || _fa == 0)", "jng": f"({less} || _fa == 0)",
+                  "jg": f"(!{less} && _fa != 0)", "jnle": f"(!{less} && _fa != 0)",
+                  "jo": "(_fb != 0)", "jno": "(_fb == 0)"}
+        if jcc in signed:
+            return signed[jcc], desc
         return None
 
     # ── and/or/xor: result-based, CF=0, OF=0 ──
@@ -1390,6 +1437,7 @@ class Lifter:
         self.func_start = 0  # Set per-function by translator
         self.func_end = 0
         self.needs_cf = False  # Set per-function by translator (has adc/sbb)
+        self.needs_of = False  # Set per-function: adc/sbb with a signed consumer
         self.publishes_ebp = False  # Set per-function: has a real frame
         self.trace_exit_name = None  # Set per-function when traced
         self.force_return_value = None   # Set per-function by --force-return
@@ -1397,7 +1445,7 @@ class Lifter:
         # batch translator diffs this against the functions it actually defined
         # so it can stub out the remainder (see translate_batch_split).
         self.referenced_calls = {}
-        # HobbitRecomp: `jmp reg` switch arms resolved by our analyzer from
+        # `jmp reg` switch arms resolved by the analyzer (tools/hobbit) from
         # PIC tables, {jmp_addr: [absolute target, ...]}.
         self.reg_switch_targets = {}
         # Mnemonics that fell through to the TODO comment, as
@@ -1422,14 +1470,19 @@ class Lifter:
         # command-line override keep working.
         self.SEH_PROLOGS = frozenset(_as_addr_set(seh_prolog))
         self.SEH_PROLOG = min(self.SEH_PROLOGS) if self.SEH_PROLOGS else None
-        self.SEH_EPILOG = seh_epilog
+        # seh_epilog takes the same three forms. MSVC 8 has one per frame
+        # kind (__SEH_epilog4, __EH_epilog3, __EH_epilog3_GS).
+        self.SEH_EPILOGS = frozenset(_as_addr_set(seh_epilog))
+        self.SEH_EPILOG = min(self.SEH_EPILOGS) if self.SEH_EPILOGS else None
         # Every address whose call means "the frame pointer changed underneath
-        # this function": all the prologs, plus the epilog.
-        self.SEH_HELPERS = self.SEH_PROLOGS | (
-            {seh_epilog} if seh_epilog is not None else set())
+        # this function": all the prologs, plus the epilogs.
+        self.SEH_HELPERS = self.SEH_PROLOGS | self.SEH_EPILOGS
         self.SETJMP_FN = setjmp_fn
         self.LONGJMP_FN = longjmp_fn
         self.jump_table_targets = {}
+        # The current function's decoded instructions, set by the translator,
+        # so a switch can check the bound and byte map before its jmp.
+        self.func_instructions = []
         # call-site VA -> targets the title was measured reaching from it
         # (tools/recomp/output/icall_sites.json). A site whose whole recorded
         # set is small and translated is guarded with direct calls; the
@@ -1629,7 +1682,7 @@ class Lifter:
                           "bts": f"{word} | (1u << {index})",
                           "btc": f"{word} ^ (1u << {index})"}.get(m)
                 if update:
-                    out.append(f"{word} = ({update}); /* {m} */")
+                    out.append(_st("MEM32", word_addr, f"({update})") + f" /* {m} */")
                 elif not out:
                     out.append(f"/* bt {insn.op_str}: no CF consumer */")
                 return out
@@ -1703,11 +1756,24 @@ class Lifter:
         # pushfd is lifted in the instruction loop, where the flag setter is
         # known.
         if m == "pushfd":
-            return (["PUSH32(esp, 0x202u | (g_df ? 0x400u : 0u));"]
+            return (["PUSH32(esp, 0x202u | (g_df ? 0x400u : 0u)"
+                     " | (g_eflags_id ? 0x200000u : 0u));"]
                     + self._unimplemented(insn, m, " (EFLAGS not derivable here)"))
+        # popfd loads OF DF SF ZF AF PF CF and ID. The five status flags and AF
+        # go into _fa at their EFLAGS positions, the image sahf leaves, and
+        # the instruction loop tracks popfd as their setter.
         if m == "popfd":
-            return (["{ uint32_t _efl; POP32(esp, _efl); g_df = (_efl >> 10) & 1u; }"]
-                    + self._unimplemented(insn, m, " (only DF is restored)"))
+            out = ["{ uint32_t _efl; POP32(esp, _efl); g_df = (_efl >> 10) & 1u;"
+                   " g_eflags_id = (_efl >> 21) & 1u; _fa = _efl & 0x8D5u; }"
+                   " /* popfd */"]
+            if self.needs_cf:
+                out.append("_cf = _fa & 1u;")
+            return out
+        # The guest sees a fixed CPU, not the host (recomp_cpuid in the
+        # runtime). Leaf in EAX; the subleaf in ECX selects nothing it reports.
+        if m == "cpuid":
+            return ["{ uint32_t _id[4]; recomp_cpuid(eax, _id); eax = _id[0];"
+                    " ebx = _id[1]; ecx = _id[2]; edx = _id[3]; } /* cpuid */"]
         if m in ("sete", "setne", "setb", "setae", "setbe", "seta",
                  "setl", "setge", "setle", "setg", "sets", "setns", "setp", "setnp", "setpe", "setpo",
                  "seto", "setno"):
@@ -1771,6 +1837,8 @@ class Lifter:
                  "pshufd", "pinsrw", "pextrw",
                  "pslldq", "psrldq", "pmuludq", "cvtdq2ps", "cvtdq2pd",
                  "pshuflw", "movlpd", "cvtps2pd", "addpd", "cvtpd2ps",
+                 "subpd", "mulpd", "andpd", "orpd", "andnpd",
+                 "unpcklpd", "unpckhpd", "shufpd", "pmovmskb",
                  "packuswb", "packsswb", "packssdw")                 or m in _SSE_CMP_NAMED \
                 or m in _SSE2_INT_BINARY or m in _SSE2_SHIFT:
             return self._lift_sse(insn, m, ops)
@@ -1954,7 +2022,7 @@ class Lifter:
     # ── MOV family ──
 
     def _lift_mov(self, insn, ops):
-        if nops := len(ops) < 2:
+        if len(ops) < 2:
             return [f"/* mov: bad operands */"]
         # Control and debug registers (cr0, dr7...) are privileged; in a user
         # binary they only appear where data was decoded as code. _fmt_reg
@@ -2182,14 +2250,36 @@ class Lifter:
         src = _fmt_operand_read(ops[1])
         # sbb reg, reg is a common idiom: result is 0 or 0xFFFFFFFF depending on CF
         if ops[0].type == "reg" and ops[1].type == "reg" and ops[0].reg == ops[1].reg:
-            return [_fmt_operand_write(ops[0], "_cf ? 0xFFFFFFFF : 0")
-                    + " /* sbb self (CF extend) */",
-                    self._result_snapshot(ops, "sbb")]
+            out = [_fmt_operand_write(ops[0], "_cf ? 0xFFFFFFFF : 0")
+                   + " /* sbb self (CF extend) */",
+                   self._result_snapshot(ops, "sbb")]
+            if self.needs_of:
+                out.append("_fb = 0; /* sbb self: OF = 0 */")
+            return out
         w = (_operand_width(ops[0]) or 4) * 8
+        if self.needs_of:
+            return self._adc_sbb_of(ops, "sbb", dst, src, w)
         return ["{ uint64_t _t = (uint64_t)(%s) - (uint64_t)(%s) - (uint64_t)_cf;"
                 " _cf = (int)((_t >> %d) & 1); %s }  /* sbb */"
                 % (dst, src, w, _fmt_operand_write(ops[0], "(uint32_t)_t")),
                 self._result_snapshot(ops, "sbb")]
+
+    def _adc_sbb_of(self, ops, m, dst, src, w):
+        """adc/sbb that also publish OF into _fb, for a signed jcc after them.
+
+        dst and src are read once, before the write, so `sbb ecx, [ecx]` and
+        a destination overwritten before the jcc both give the hardware's OF:
+        the sign bit of (d ^ s) & (d ^ r) for sbb, ~(d ^ s) & (d ^ r) for adc,
+        with the carry or borrow already in r.
+        """
+        op, inv = ("-", "") if m == "sbb" else ("+", "~")
+        return ["{ uint32_t _d = (uint32_t)(%s), _s = (uint32_t)(%s);"
+                " uint64_t _t = (uint64_t)_d %s (uint64_t)_s %s (uint64_t)_cf;"
+                " _cf = (int)((_t >> %d) & 1); %s"
+                " _fb = ((%s(_d ^ _s) & (_d ^ (uint32_t)_t)) >> %d) & 1u; }  /* %s, OF in _fb */"
+                % (dst, src, op, op, w, _fmt_operand_write(ops[0], "(uint32_t)_t"),
+                   inv, w - 1, m),
+                self._result_snapshot(ops, m)]
 
     def _lift_adc(self, insn, ops):
         """ADC: add with carry."""
@@ -2198,6 +2288,8 @@ class Lifter:
         dst = _fmt_operand_read(ops[0])
         src = _fmt_operand_read(ops[1])
         w = (_operand_width(ops[0]) or 4) * 8
+        if self.needs_of:
+            return self._adc_sbb_of(ops, "adc", dst, src, w)
         return ["{ uint64_t _t = (uint64_t)(%s) + (uint64_t)(%s) + (uint64_t)_cf;"
                 " _cf = (int)((_t >> %d) & 1); %s }  /* adc */"
                 % (dst, src, w, _fmt_operand_write(ops[0], "(uint32_t)_t")),
@@ -2572,19 +2664,6 @@ class Lifter:
 
     # ── Control flow ──
 
-    def _build_call_args(self, target_addr):
-        """Build argument list for a function call based on ABI data."""
-        abi_info = self.abi_db.get(target_addr, {})
-        cc = abi_info.get("calling_convention", "cdecl")
-        num_params = abi_info.get("estimated_params", 0)
-
-        args = []
-        if cc in ("thiscall", "thiscall_cdecl"):
-            args.append("(void*)(uintptr_t)ecx")
-        for i in range(num_params):
-            args.append(f"0 /* a{i+1} */")
-        return ", ".join(args)
-
     # SEH prolog/epilog addresses - these functions modify ebp for their
     # caller.  After calling __SEH_prolog, the caller must read back ebp
     # from g_seh_ebp.  Before returning, __SEH_prolog writes g_seh_ebp.
@@ -2596,6 +2675,7 @@ class Lifter:
     SEH_PROLOGS = frozenset()
     SEH_HELPERS = frozenset()
     SEH_EPILOG = None
+    SEH_EPILOGS = frozenset()
 
     # The CRT's setjmp/longjmp, detected by detect_setjmp_helpers().
     SETJMP_FN = None
@@ -2835,11 +2915,12 @@ class Lifter:
             targets.append(val)
         return targets
 
-    def _analyze_switch_table(self, ops):
+    def _analyze_switch_table(self, ops, jmp_va=None):
         """Detect if an indirect jmp operand is an intra-function switch table.
         Pattern: jmp [reg*scale + table_base] or jmp [reg + table_base]
         Returns (targets: list[int]) if ALL table entries are within the current
-        function, else empty list."""
+        function, else empty list. jmp_va, when given, lets a one-arm table
+        through if a bound check and byte map prove it (_byte_map_one_arm)."""
         if not ops or ops[0].type != "mem":
             return []
         op = ops[0]
@@ -2871,6 +2952,8 @@ class Lifter:
         # likely a coincidence than a jump table.
         if len(inside) >= 2:
             return inside
+        if len(inside) == 1 and self._byte_map_one_arm(jmp_va, op, inside):
+            return inside
         if table_va in self.jump_table_targets:
             # A census entry is authoritative (see _authoritative_jump_tables);
             # never rediscover arms it rejected.
@@ -2899,6 +2982,45 @@ class Lifter:
         if len(below) >= 2:
             return below
         return []
+
+    def _byte_map_one_arm(self, jmp_va, op, inside):
+        """True when the code before the jmp proves a one-arm table.
+
+        MSVC dispatches a sparse switch through a byte map:
+
+            cmp  ecx, 6
+            ja   default
+            movzx ecx, byte [ecx + MAP]
+            jmp  [ecx*4 + TABLE]
+
+        With one distinct arm the table has a single entry, which the
+        two-arm rule rejects as a coincidence; the jmp then became a tail
+        call into the middle of its own function (LEGO Harry Potter
+        0x0096D7E4). The bound fixes the map's length, so when all N+1 map
+        bytes index the arms read here the table is fully known.
+        """
+        if jmp_va is None or op.mem_base or op.mem_scale != 4 or not op.mem_index:
+            return False
+        idx = op.mem_index
+        insns = self.func_instructions
+        pos = next((i for i, insn in enumerate(insns) if insn.address == jmp_va), None)
+        if pos is None or pos < 3:
+            return False
+        cmp, ja, movzx = insns[pos - 3], insns[pos - 2], insns[pos - 1]
+        if (movzx.mnemonic != "movzx" or len(movzx.operands) != 2
+                or movzx.operands[0].type != "reg" or movzx.operands[0].reg != idx):
+            return False
+        src = movzx.operands[1]
+        if (src.type != "mem" or src.mem_size != 1 or src.mem_base != idx
+                or src.mem_index or not src.mem_disp):
+            return False
+        if ja.mnemonic != "ja" or cmp.mnemonic != "cmp" or len(cmp.operands) != 2:
+            return False
+        reg, bound = cmp.operands
+        if reg.type != "reg" or reg.reg != idx or bound.type != "imm" or bound.imm < 0:
+            return False
+        byte_map = self._image_bytes(src.mem_disp, bound.imm + 1)
+        return byte_map is not None and all(b < len(inside) for b in byte_map)
 
     def _leading_arms(self, targets):
         """Entries up to the first one outside the current function."""
@@ -2952,7 +3074,7 @@ class Lifter:
             return [f"goto loc_{insn.jump_target:08X};"]
         elif len(ops) >= 1:
             # Detect intra-function switch tables (computed gotos)
-            switch_targets = self._analyze_switch_table(ops)
+            switch_targets = self._analyze_switch_table(ops, insn.address)
             if switch_targets:
                 target_expr = _fmt_operand_read(ops[0])
                 unique_targets = sorted(set(switch_targets))
@@ -3706,9 +3828,10 @@ class Lifter:
             if lifted is not None:
                 return lifted
             return [f"/* {m} {insn.op_str} */"]
-        if m in ("andps", "orps", "andnps"):
+        if m in ("andps", "orps", "andnps", "andpd", "orpd", "andnpd"):
             helper = {"andps": "XMM_AND", "orps": "XMM_OR",
-                      "andnps": "XMM_ANDN"}[m]
+                      "andnps": "XMM_ANDN", "andpd": "XMM_AND",
+                      "orpd": "XMM_OR", "andnpd": "XMM_ANDN"}[m]
             lifted = _packed_binary(helper)
             if lifted is not None:
                 return lifted
@@ -3772,12 +3895,16 @@ class Lifter:
                 pred, width = ops[2].imm & 7, m[-2:]
             if nops < 2 or not _is_xmm(ops[0]):
                 return [f"/* {m} {insn.op_str} */"]
-            if width == "ps":
+            if width in ("ps", "pd"):
                 b = _packed_read(ops[1])
                 if b is None:
                     return [f"/* {m} {insn.op_str} */"]
-                return [_packed_write(ops[0], f"XMM_CMP_PRED({ops[0].reg}, {b}, {pred})")
+                helper = "XMM_CMP_PRED" if width == "ps" else "XMM_CMP_PRED_PD"
+                return [_packed_write(ops[0], f"{helper}({ops[0].reg}, {b}, {pred})")
                         + f" /* {m} */"]
+            if width == "sd":
+                return [f"{ops[0].reg}.q[0] = recomp_cmp_pred_d({ops[0].reg}.d[0], "
+                        f"{_sse_read(ops[1])}, {pred}) ? ~0ull : 0ull; /* {m} */"]
             return [f"{ops[0].reg}.u[0] = recomp_cmp_pred({ops[0].reg}.f[0], "
                     f"{_sse_read(ops[1])}, {pred}) ? 0xFFFFFFFFu : 0u; /* {m} */"]
 
@@ -3861,12 +3988,27 @@ class Lifter:
             b = _packed_read(ops[1])
             if b is not None:
                 return [f"{ops[0].reg} = XMM_CVT_PD2PS({b}); /* {m} */"]
-        if m == "addpd" and nops >= 2 and _is_xmm(ops[0]):
-            lifted = _packed_binary("XMM_ADDPD")
+        if m in ("addpd", "subpd", "mulpd", "unpcklpd", "unpckhpd") \
+                and nops >= 2 and _is_xmm(ops[0]):
+            # unpck[lh]pd are punpck[lh]qdq: the same qword interleave.
+            lifted = _packed_binary({
+                "addpd": "XMM_ADDPD", "subpd": "XMM_SUBPD", "mulpd": "XMM_MULPD",
+                "unpcklpd": "XMM_PUNPCKLQDQ", "unpckhpd": "XMM_PUNPCKHQDQ"}[m])
             if lifted is not None:
                 return lifted
+        if m == "shufpd" and nops >= 3 and ops[2].type == "imm" \
+                and _is_xmm(ops[0]):
+            b = _packed_read(ops[1])
+            if b is not None:
+                return [f"{ops[0].reg} = XMM_SHUFPD({ops[0].reg}, {b}, "
+                        f"{ops[2].imm & 0xFF}u); /* {m} */"]
+        if m == "pmovmskb" and nops >= 2 and _is_xmm(ops[1]) \
+                and ops[0].type == "reg":
+            return [_fmt_operand_write(ops[0], f"XMM_PMOVMSKB({ops[1].reg})")
+                    + f" /* {m} */"]
         if m in ("pinsrw", "pextrw", "pshufd", "pshuflw", "pslldq", "psrldq",
-                 "cvtdq2ps", "cvtdq2pd", "cvtps2pd", "cvtpd2ps", "addpd") \
+                 "cvtdq2ps", "cvtdq2pd", "cvtps2pd", "cvtpd2ps", "addpd",
+                 "subpd", "mulpd", "unpcklpd", "unpckhpd", "shufpd", "pmovmskb") \
                 or m in _SSE2_SHIFT or m in _SSE2_INT_BINARY:
             return self._unimplemented(insn, m)
 
@@ -4398,21 +4540,13 @@ def lift_basic_block(lifter, bb, flag_state=None):
             i += 1
             continue
 
-        # pushfd: build EFLAGS from the same conditions the jcc family reads.
-        # Only CF/PF/ZF/SF/OF (plus the fixed bit 1, IF, and DF) are modelled;
-        # if any of the five has no derivation for the last setter the
-        # instruction stays unhandled rather than pushing a guess.
+        # pushfd: build EFLAGS from the same conditions the jcc family reads
+        # (see _pushfd_flags), plus the fixed bit 1, IF, DF and ID.
         if curr.mnemonic == "pushfd" and last_flag_setter:
-            parts = []
-            for jcc, bit in (("jb", 0x001), ("jp", 0x004), ("je", 0x040),
-                             ("js", 0x080), ("jo", 0x800)):
-                probe = _make_condition(jcc, last_flag_setter, last_flag_ops)
-                if probe is None:
-                    parts = []
-                    break
-                parts.append(f"(({probe[0]}) ? 0x{bit:03X}u : 0u)")
+            parts = _pushfd_flags(last_flag_setter, last_flag_ops)
             if parts:
-                parts += ["(g_df ? 0x400u : 0u)", "0x202u"]
+                parts += ["(g_df ? 0x400u : 0u)",
+                          "(g_eflags_id ? 0x200000u : 0u)", "0x202u"]
                 stmts.append(f"PUSH32(esp, {' | '.join(parts)});"
                              f" /* pushfd ({last_flag_setter}) */")
                 i += 1
@@ -4526,6 +4660,12 @@ def lift_basic_block(lifter, bb, flag_state=None):
             # them in _fb. ZF/SF/PF stay undefined, which _make_condition
             # refuses for this setter.
             last_flag_setter, last_flag_ops = "mul", list(curr.operands)
+        elif curr.mnemonic == "popfd":
+            # The popped image sits in _fa, laid out as sahf's (see the popfd
+            # lift), so the same conditions read it. Before _FLAGS_UNDEFINED,
+            # which lists popfd for passes that do not read the image.
+            last_flag_setter = "popfd"
+            last_flag_ops = []
         elif curr.mnemonic in _FLAGS_UNDEFINED:
             # Flags are undefined after these - clear tracking
             last_flag_setter = None

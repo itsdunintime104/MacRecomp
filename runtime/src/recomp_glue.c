@@ -157,6 +157,41 @@ void recomp_divide_error(uint32_t va)
     abort();
 }
 
+/* The CPU the guest sees, whatever the host is: a Core 2 Duo E8400 (family 6,
+ * model 23, stepping 10), one logical processor. Leaf 1 EDX advertises FPU,
+ * TSC, CX8, CMOV, MMX, FXSR, SSE and SSE2; ECX advertises nothing, because
+ * the lifter translates no SSE3, SSSE3 or SSE4.1 instruction, and a guest
+ * told they exist would take code paths that run as RECOMP_UNIMPL. Leaves
+ * past the maximums, and every leaf not listed, read as zeros. */
+void recomp_cpuid(uint32_t leaf, uint32_t out[4])
+{
+    static const char vendor[12] = "GenuineIntel";
+    static const char brand[48] = "Intel(R) Core(TM)2 Duo CPU     E8400  @ 3.00GHz";
+    out[0] = out[1] = out[2] = out[3] = 0;
+    switch (leaf) {
+    case 0:
+        out[0] = 1;              /* max basic leaf */
+        memcpy(&out[1], vendor, 4);      /* EBX EDX ECX, in that order */
+        memcpy(&out[3], vendor + 4, 4);
+        memcpy(&out[2], vendor + 8, 4);
+        break;
+    case 1:
+        out[0] = 0x0001067Au;    /* ext model 1, family 6, model 7, stepping 10 */
+        out[1] = 0x00010800u;    /* 1 logical CPU, clflush 64 bytes, APIC ID 0 */
+        out[3] = (1u << 0) | (1u << 4) | (1u << 8) | (1u << 15)
+               | (1u << 23) | (1u << 24) | (1u << 25) | (1u << 26);
+        break;
+    case 0x80000000u:
+        out[0] = 0x80000004u;    /* max extended leaf */
+        break;
+    case 0x80000002u: case 0x80000003u: case 0x80000004u:
+        memcpy(out, brand + 16 * (leaf - 0x80000002u), 16);
+        break;
+    default:
+        break;
+    }
+}
+
 uint32_t xbox_PortIn(uint32_t port, int width)
 {
     fprintf(stderr, "port in 0x%X width %d not implemented\n", port, width);

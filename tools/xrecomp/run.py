@@ -44,7 +44,9 @@ def write_imports_h(stubs: dict[int, str], out: Path, prefix: str) -> None:
 
 def build(analysis_path: Path, switch_path: Path, bin_path: Path, out: Path,
           only: set[int] | None = None, *, prefix: str = "game",
-          native_overrides: frozenset[int] = frozenset()) -> BatchTranslator:
+          native_overrides: frozenset[int] = frozenset(),
+          seh_prolog: frozenset[int] | None = None,
+          seh_epilog: frozenset[int] | None = None) -> BatchTranslator:
     """Configure from Mach-O, emit translator inputs, build the translator."""
     analysis = json.loads(analysis_path.read_text())
     switch_tables = json.loads(switch_path.read_text())
@@ -63,7 +65,7 @@ def build(analysis_path: Path, switch_path: Path, bin_path: Path, out: Path,
         labels_json_path=str(inputs["labels"]), output_dir=str(out),
         image_format="macho",
         reg_switch_json_path=str(inputs["reg_switches"]),
-        import_stubs=stubs)
+        import_stubs=stubs, seh_prolog=seh_prolog, seh_epilog=seh_epilog)
     bt.native_overrides = set(native_overrides)
     return bt
 
@@ -80,6 +82,31 @@ def read_native_overrides(path: Path) -> frozenset[int]:
         if text:
             vas.add(int(text, 16))
     return frozenset(vas)
+
+
+def parse_vas(text: str | None) -> frozenset[int] | None:
+    """'0xA,0xB' -> {0xA, 0xB}; None stays None (no override)."""
+    if text is None:
+        return None
+    return frozenset(int(a, 16) for a in text.split(",") if a.strip())
+
+
+_GPRS = frozenset({"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"})
+
+
+def read_entry_zf(path: Path) -> dict[int, tuple[str, int, int]]:
+    """{entry VA: (reg, mask, value)} from {"0xVA": {"reg", "mask", "value"}}.
+
+    Masks and values may be ints or hex strings."""
+    out: dict[int, tuple[str, int, int]] = {}
+    for va, spec in json.loads(path.read_text()).items():
+        reg = spec["reg"]
+        if reg not in _GPRS:
+            raise ValueError(f"{path}: {va}: reg {reg!r} is not a 32-bit GPR")
+        mask, value = (int(v, 0) if isinstance(v, str) else int(v)
+                       for v in (spec["mask"], spec["value"]))
+        out[int(va, 16)] = (reg, mask, value)
+    return out
 
 
 # Set in the parent before the pool forks; the workers inherit it, so the
@@ -154,6 +181,10 @@ def main() -> int:
                     help="output file prefix: <prefix>_NNNN.c")
     ap.add_argument("--overrides", type=Path, default=None,
                     help="file of hex VAs the runtime replaces natively")
+    ap.add_argument("--entry-zf", type=Path, default=None,
+                    help="JSON {entry VA: {reg, mask, value}}: functions whose "
+                         "entry block reads ZF = ((reg & mask) == value), as "
+                         "every caller leaves it")
     ap.add_argument("--sample", type=int, default=0)
     ap.add_argument("--only", default=None,
                     help="comma-separated hex addresses to lift (debug); "
@@ -161,6 +192,12 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1,
                     help="worker processes (default: all cores); 1 lifts "
                          "in this process")
+    ap.add_argument("--seh-prolog", default=None,
+                    help="comma-separated hex VAs of MSVC frame prologs "
+                         "(__SEH_prolog4, __EH_prolog3*) whose callers read "
+                         "ebp back from g_seh_ebp")
+    ap.add_argument("--seh-epilog", default=None,
+                    help="comma-separated hex VAs of the matching epilogs")
     args = ap.parse_args()
 
     only_text = args.only
@@ -170,7 +207,11 @@ def main() -> int:
     overrides = (read_native_overrides(args.overrides)
                  if args.overrides else frozenset())
     bt = build(args.analysis, args.switch, args.bin, args.out, only,
-               prefix=args.prefix, native_overrides=overrides)
+               prefix=args.prefix, native_overrides=overrides,
+               seh_prolog=parse_vas(args.seh_prolog),
+               seh_epilog=parse_vas(args.seh_epilog))
+    if args.entry_zf:
+        bt.translator.entry_zf = read_entry_zf(args.entry_zf)
     func_list = sorted(bt.func_db.items())
     shards = (translate_parallel(bt, func_list, args.jobs)
               if args.jobs > 1 else None)

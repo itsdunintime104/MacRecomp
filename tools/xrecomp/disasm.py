@@ -158,10 +158,15 @@ class Disassembler:
 
     def _decode_instruction(self, cs_insn):
         """Convert one Capstone instruction into the translator model."""
+        # `repz ret` is the AMD branch-predictor idiom: the prefix does
+        # nothing, and the instruction is a plain ret.
+        mnemonic = cs_insn.mnemonic
+        if mnemonic == "repz ret":
+            mnemonic = "ret"
         insn = Instruction(
             address=cs_insn.address,
             size=cs_insn.size,
-            mnemonic=cs_insn.mnemonic,
+            mnemonic=mnemonic,
             op_str=cs_insn.op_str,
             bytes_hex=cs_insn.bytes.hex(),
             groups=tuple(cs_insn.groups),

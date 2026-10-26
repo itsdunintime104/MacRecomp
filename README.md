@@ -1,14 +1,14 @@
 # MacRecomp
 
-MacRecomp rebuilds 32-bit Intel Mac games as native arm64 programs for Apple Silicon. macOS dropped 32-bit apps in Catalina, and Rosetta 2 does not run them, so these games no longer start on a current Mac.
+MacRecomp rebuilds 32-bit Intel Mac games as native arm64 programs for Apple Silicon. macOS dropped 32-bit apps in Catalina, and Rosetta 2 does not run them, so these games no longer start on a current Mac. The translator also takes a 32-bit Windows (PE) binary, so a Windows-only game can be rebuilt the same way.
 
 It works by static recompilation:
 
-1. The translator turns every function in the game binary (i386 Mach-O) into C.
-2. The runtime replaces the parts of macOS, OpenGL, Core Audio and Steam that the game calls.
+1. The translator turns every function in the game binary (i386 Mach-O, or PE32 for a Windows game) into C.
+2. The runtime replaces the parts of macOS, OpenGL, Core Audio and Steam that the game calls. A Windows game brings its own Win32 layer in its repo and uses only the generic parts of this runtime.
 3. Clang compiles both into one arm64 program, which loads the game's data from your Steam copy.
 
-One part still needs Rosetta 2. The games compile their shaders with NVIDIA's Cg library, which has no arm64 version, so the runtime sends each Cg call to `cghelper`, a small x86_64 program that runs under Rosetta.
+One part of the Mac games still needs Rosetta 2. They compile their shaders with NVIDIA's Cg library, which has no arm64 version, so the runtime sends each Cg call to `cghelper`, a small x86_64 program that runs under Rosetta.
 
 This repo holds no game code or data. Each game has its own repo, which pins this one as its `engine/` submodule.
 
@@ -18,16 +18,17 @@ This repo holds no game code or data. Each game has its own repo, which pins thi
 |---|---|---|---|---|---|---|
 | LEGO The Hobbit | Hobbit Recompiled | [HobbitRecompiled](https://github.com/itsdunintime104/HobbitRecompiled) | 84019 | PASS | PASS | Levels 1–3 played, level 1 finished. 88–129 FPS at 2592 × 1674 in levels 2–3 |
 | LEGO Marvel Super Heroes | Superheros Bricks Recompiled | [SuperheroBrickRecomp](https://github.com/itsdunintime104/SuperheroBrickRecomp) | 329428 | PASS | PASS | Intro, menus and level 1 played. 72.5 FPS (1% low 39.7) at 2592 × 1674 |
+| LEGO Harry Potter: Years 1-4 (Windows) | Wizard Bricks Recompiled | [WizardBrick-Recomp](https://github.com/itsdunintime104/WizardBrick-Recomp) | 660 | n/a | n/a | Plays the levels tested so far (Leaky Cauldron, Diagon Alley, Gringotts), with sound. 120 FPS at 2056 × 1290 |
 
-Both are Feral Interactive ports.
+The Hobbit and Marvel are Feral Interactive ports (Mach-O). Harry Potter is the Windows release (PE). It does not use recomp-check or boot-check; it uses its own checks (`tests/run_all.sh` in its repo).
 
 ## Which games can work
 
 | Layer | Depends on | Other games |
 |---|---|---|
-| Translator | The i386 instruction set | Any 32-bit Intel Mac program |
+| Translator | The i386 instruction set | Any 32-bit Intel Mac program. A 32-bit Windows program needs a driver in its game repo that supplies the entry point (see [A Windows game](#a-windows-game)) |
 | Front end (window, display, input) | Feral's front-end code, found by signature | Other Feral ports. Other publishers need their own replacements |
-| Runtime | The system functions these two games call | Each new import needs a replacement |
+| Runtime | The macOS functions the two Mac games call | Each new import needs a replacement. A Windows game supplies its own Win32 layer |
 
 64-bit Intel Mac games run under Rosetta 2 and do not need this.
 
@@ -48,11 +49,21 @@ When `derive` cannot find a value (a signature matches zero times, or more than 
 
 An import with no replacement links as a placeholder. When the game calls it, the program prints `missing import: <name>` and the caller, then exits with code 3. Run boot-check to find these.
 
+### A Windows game
+
+[WizardBrick-Recomp](https://github.com/itsdunintime104/WizardBrick-Recomp) (LEGO Harry Potter) also has this repo as `engine/`, but it has no `game.toml` and does not use `engine/build/Makefile`:
+
+- `tools/pe/analyze_pe.py` in the game repo writes `recon/` from the PE32 binary.
+- `tools/pe/run_lift_pe.py` in the game repo supplies the entry point from `recon/analysis.json` (`tools.xrecomp.run` reads it from a Mach-O header) and runs `tools.xrecomp.run`. It adds `--seh-prolog` and `--seh-epilog`, the addresses of the MSVC frame helpers (`__SEH_prolog4`, `__EH_prolog3*`), and `--entry-zf`, a JSON file of functions whose entry block reads ZF as every caller leaves it.
+- The game repo's `build/Makefile` compiles the lifted C, the generic part of this runtime (`recomp_glue`, `guest_mem`, `guest_call`, `host_funcs`, `guest_heap`, `dlmalloc`, `diag`, `hud_core`) and its own Win32 layer in `runtime/`. Direct3D 9 goes to DXVK, which draws with Vulkan on KosmicKrisp; vkd3d-shader compiles the shaders.
+
+See `docs/BUILDING.md` in [WizardBrick-Recomp](https://github.com/itsdunintime104/WizardBrick-Recomp/blob/main/docs/BUILDING.md) for the steps.
+
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `tools/xrecomp/` | i386 to C translator (ported from xboxrecomp, MIT; see `tools/xrecomp/UPSTREAM.md`) |
+| `tools/xrecomp/` | i386 to C translator (ported from xboxrecomp, MIT; see `tools/xrecomp/UPSTREAM.md`), for Mach-O and PE32 code |
 | `tools/hobbit/` | Mach-O analysis, disassembly sweep, import signatures, code generators. The name is historical: Marvel's build uses these tools too |
 | `tools/game/` | game profile (`game.toml`) and `derive` |
 | `tools/game/feral_frontend.toml` | signatures of the Feral front-end functions the runtime replaces |
@@ -60,9 +71,9 @@ An import with no replacement links as a placeholder. When the game calls it, th
 | `tools/checks/` | `recomp-check` and `boot-check` |
 | `tools/package/` | app bundle and launcher |
 | `tools/perf/` | `plot_frames`, which turns a frame-time CSV into a chart |
-| `runtime/` | startup, guest memory, import replacements, SDL2 front end, Steam stand-in |
+| `runtime/` | startup, guest memory, import replacements, SDL2 front end, Steam stand-in. `hud_core.c` holds the frame-time overlay logic; `frontend_hud.c` draws it with OpenGL, and a game repo can add another draw backend |
 | `build/Makefile` | compiles and links the generated C and the runtime |
-| `tests/` | translator and runtime tests |
+| `tests/` | translator and runtime tests, including lifter tests for code forms the Windows game uses (`test_seh_helpers.py`, `test_lift_import_tail.py`, `test_lift_entry_zf.py`, `test_lift_switch_byte_map.py`, `test_lift_fuzz_forms.py`) |
 
 ## Checks
 
@@ -117,6 +128,8 @@ The tests use The Hobbit (Steam build 84019) as the reference game. Run them fro
 ```
 
 `RECOMP_GAME_ROOT` sets the game folder and `HOBBIT_BIN` the binary.
+
+The lifter tests for the Windows code forms (listed under [Layout](#layout)) build their own input and need no game files.
 
 Some tests compare with Apple's `otool`. If an Intel-only `otool` (from MacPorts, for example) is first in `PATH`, they fail with an `xcrun` error. Put `/usr/bin` first in `PATH`.
 

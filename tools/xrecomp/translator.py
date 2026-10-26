@@ -18,7 +18,7 @@ import os
 import struct
 import sys
 
-# Import the functions, not the VA constants: configure_from_xbe() rebinds those
+# Import the functions, not the VA constants: configure_from_macho() rebinds those
 # at startup, so a by-value import would freeze the fallback layout.
 from .config import va_to_file_offset, is_code_address
 from . import config as _config
@@ -63,12 +63,44 @@ def _merge_flag_states(states):
     if first[0] in ("cmp", "test") and len(first[1]) == 2:
         width = _operand_width(first[1][0]) or _operand_width(first[1][1])
         for kind, ops in states[1:]:
-            if kind != first[0] or len(ops) != 2:
+            if len(ops) != 2:
                 return None
             if (_operand_width(ops[0]) or _operand_width(ops[1])) != width:
                 return None
+            if kind != first[0]:
+                return _merge_zero_cmp_and_test(states, width)
         return first
     return _merge_zero_flag(states)
+
+
+def _merge_zero_cmp_and_test(states, width):
+    """Join `cmp X, 0` edges with `test m, imm` edges.
+
+    normalise_zero_test turns `test ecx, ecx` into `cmp ecx, 0`, so a block
+    reached by it and by `test dword [eax+0x84], 0x100` (LEGO Harry Potter
+    sub_00459500) saw two operations and inherited nothing. `cmp X, 0` is
+    `test X, all-ones`: same ZF/SF/PF, CF = OF = 0. The cmp edge snapshots
+    _fb = 0 and a test edge with a non-zero immediate snapshots _fb != 0, so
+    the "__test_or_zero" state reads its mask as `_fb ? _fb : all-ones`.
+    """
+    if not width:
+        return None
+    mask = (1 << (8 * width)) - 1
+    kinds = set()
+    for kind, ops in states:
+        if (len(ops) != 2 or ops[1].type != "imm"
+                or (_operand_width(ops[0]) or _operand_width(ops[1])) != width):
+            return None
+        if kind == "cmp" and ops[1].imm & mask == 0:
+            kinds.add(kind)
+        elif kind == "test" and ops[1].imm & mask:
+            kinds.add(kind)
+        else:
+            return None
+    if kinds != {"cmp", "test"}:
+        return None
+    return ("__test_or_zero",
+            next(list(ops) for kind, ops in states if kind == "test"))
 
 
 def _merge_zero_flag(states):
@@ -440,6 +472,10 @@ def load_label_db(labels_json_path):
 
 class FunctionTranslator:
     """Translates individual x86 functions to C source code."""
+
+    # Per-game: {entry VA: (reg, mask, value)} for functions whose entry block
+    # reads ZF set by every caller to ((reg & mask) == value). See --entry-zf.
+    entry_zf: dict[int, tuple[str, int, int]] = {}
 
     STRONG_ENTRY_METHODS = frozenset({
         "entry_point", "call_target", "indirect_call_slot",
@@ -1700,17 +1736,35 @@ class FunctionTranslator:
             return None
         return self.xbe_data[offset:offset + size]
 
-    def _determine_calling_convention(self, func_info):
-        """Guess calling convention from function properties."""
-        name = func_info.get("name", "")
-        # thiscall methods have ecx = this
-        if "thiscall" in name or func_info.get("calling_convention") == "thiscall":
-            return "thiscall"
-        return "cdecl"
-
     _CARRY_CC = frozenset({
         "b", "nae", "c", "ae", "nb", "nc", "be", "na", "a", "nbe",
     })
+
+    _SIGNED_CC = frozenset({
+        "l", "nge", "ge", "nl", "le", "ng", "g", "nle", "o", "no",
+    })
+
+    @staticmethod
+    def _function_needs_adc_sbb_of(instructions):
+        """True when the function has adc/sbb and something that may read OF.
+
+        Only these pay for OF after adc/sbb (Lifter._adc_sbb_of), for the
+        reason _cf is declared only where read: a line per adc/sbb otherwise.
+        pushfd counts because it builds EFLAGS from the jo condition.
+        """
+        has_carry_arith = reads_of = False
+        for insn in instructions:
+            m = insn.mnemonic
+            if m in ("adc", "sbb"):
+                has_carry_arith = True
+            elif m == "pushfd":
+                reads_of = True
+            else:
+                for prefix in ("j", "set", "cmov"):
+                    if (m.startswith(prefix)
+                            and m[len(prefix):] in FunctionTranslator._SIGNED_CC):
+                        reads_of = True
+        return has_carry_arith and reads_of
 
     @staticmethod
     def _function_needs_cf(instructions):
@@ -1731,8 +1785,9 @@ class FunctionTranslator:
                 cc = m[3:]
             elif m.startswith("cmov") and len(m) > 4:
                 cc = m[4:]
-            elif m == "lahf":
-                # lahf builds AH from the same jb probe (lifter lahf branch).
+            elif m in ("lahf", "pushfd"):
+                # lahf and pushfd build their images from the same jb probe
+                # (lifter lahf and pushfd branches).
                 cc = "b"
             if (cc in FunctionTranslator._CARRY_CC
                     and (last_setter in CF_TRACKED
@@ -2284,7 +2339,8 @@ class FunctionTranslator:
                 continue
             operand = insn.operands[0]
             if jump_table_targets is None:
-                targets = self.lifter._analyze_switch_table(insn.operands)
+                targets = self.lifter._analyze_switch_table(
+                    insn.operands, insn.address)
             else:
                 targets = jump_table_targets.get(operand.mem_disp, ())
             local = {target for target in targets if start <= target < end}
@@ -2387,6 +2443,7 @@ class FunctionTranslator:
                         self.disasm.disassemble_function(raw_bytes, start, end))
         if not instructions:
             return [], []
+        self.lifter.func_instructions = instructions
         authoritative_jump_tables = self._authoritative_jump_tables(
             instructions, validated_jump_tables)
         self.lifter.jump_table_targets = (
@@ -2415,6 +2472,7 @@ class FunctionTranslator:
                     raw_bytes, start, end, resync=resync)
                 if not instructions:
                     return [], []
+                self.lifter.func_instructions = instructions
                 (imm_refs, computed_jump_edges, debug_slide_int3s,
                  debug_slide_bypasses,
                  switch_leaders) = self._control_flow_census(
@@ -2487,7 +2545,6 @@ class FunctionTranslator:
         # Get classification and ABI info
         cls_info = self.classification_db.get(start, {})
         category = cls_info.get("category", "unknown")
-        module = cls_info.get("module", "")
         source_file = cls_info.get("source_file", "")
         abi_info = self.abi_db.get(start, {})
 
@@ -2503,11 +2560,6 @@ class FunctionTranslator:
         used_xmm = self._find_used_xmm(instructions)
         has_prologue = self._func_has_prologue(instructions)
         has_fpu = any(insn.mnemonic.startswith("f") for insn in instructions)
-
-        # Volatile registers (eax, ecx, edx, esp) are globals - don't declare
-        # them as locals. The RECOMP_GENERATED_CODE #define maps register names
-        # to the global variables via preprocessor macros.
-        volatile_regs = {"eax", "ecx", "edx", "esp"}
 
         # Ensure ebp tracked if function uses 'leave' (implicit ebp)
         if any(insn.mnemonic == "leave" for insn in instructions):
@@ -2568,7 +2620,8 @@ class FunctionTranslator:
         # hardcoded to one game's CRT here, so for every other title the forcing
         # silently never fired and the generated C failed to compile with
         # "'ebp': undeclared identifier".
-        seh_funcs = _seh_prologs_of(self.lifter)
+        seh_funcs = _seh_prologs_of(self.lifter) | set(
+            getattr(self.lifter, "SEH_EPILOGS", ()))
         epilog = getattr(self.lifter, "SEH_EPILOG", None)
         if epilog is not None:
             seh_funcs = seh_funcs | {epilog}
@@ -2730,10 +2783,10 @@ class FunctionTranslator:
         # cmpxchg belongs here too: it snapshots the compare it performed,
         # because eax may be replaced before the branch reads the result.
         if any(insn.mnemonic in ("cmp", "test", "bsf", "bsr", "cmpxchg",
-                                 "lock cmpxchg", "inc", "dec", "sahf", "fcomi", "mul", "imul",
+                                 "lock cmpxchg", "inc", "dec", "sahf", "popfd", "fcomi", "mul", "imul",
                                  "fcomip", "fcompi", "fucomi", "fucomip", "fucompi")
                or insn.mnemonic in _RESULT_SNAPSHOT_SETTERS
-               for insn in instructions):
+               for insn in instructions) or start in self.entry_zf:
             lines.append("    uint32_t _fa = 0, _fb = 0;")
             lines.append("    int32_t _fas = 0, _fbs = 0;")
             lines.append("    (void)_fa; (void)_fb; (void)_fas; (void)_fbs;")
@@ -2775,6 +2828,7 @@ class FunctionTranslator:
         # corrupts multi-word arithmetic (add/adc pairs) and the shr/adc
         # idiom MSVC emits for odd trailing elements.
         self.lifter.needs_cf = has_carry
+        self.lifter.needs_of = self._function_needs_adc_sbb_of(instructions)
         self.lifter.publishes_ebp = self._func_owns_a_frame(instructions)
 
         # SSE and MMX are architectural state, declared globally by the
@@ -2904,6 +2958,22 @@ class FunctionTranslator:
         # settled_state onto the dict that pass fills is what makes the two
         # cases one loop: it then reads exactly the states it has computed
         # itself, which is what this function did before the probe existed.
+        # A function entered with ZF already set by its callers (entry_zf): the
+        # entry block starts from that compare, snapshotted on entry. Only
+        # when nothing inside the function jumps back to the entry, or the
+        # snapshot would be stale on the second visit.
+        entry_state = None
+        if start in self.entry_zf and not preds[start]:
+            reg, mask, value = self.entry_zf[start]
+            lines.append(f"    _fa = {reg} & 0x{mask:X}u; _fb = 0x{value:X}u;"
+                         " /* entry ZF: set by every caller */")
+            entry_state = ("__entry_zf", [])
+
+        def block_incoming(bb, known):
+            if bb.start == start:
+                return entry_state
+            return _incoming_flag_state(preds[bb.start], known, False)
+
         out_state = {}
         settled_state = out_state
         if any(p >= bb.start for bb in blocks for p in preds[bb.start]):
@@ -2913,8 +2983,7 @@ class FunctionTranslator:
             for _ in range(3):
                 changed = False
                 for bb in blocks:
-                    incoming = _incoming_flag_state(
-                        preds[bb.start], out_state, bb.start == start)
+                    incoming = block_incoming(bb, out_state)
                     _, new_out = lift_basic_block(
                         self.lifter, bb, flag_state=incoming)
                     if out_state.get(bb.start) != new_out:
@@ -2930,7 +2999,8 @@ class FunctionTranslator:
         unseen_entries = set(self.lifter.imm_code_refs)
         for insn in instructions:
             if insn.mnemonic == "jmp" and not insn.jump_target and insn.operands:
-                unseen_entries.update(self.lifter._analyze_switch_table(insn.operands))
+                unseen_entries.update(self.lifter._analyze_switch_table(
+                    insn.operands, insn.address))
         edge_vars, edge_sets, block_lines = [], [], {}
 
         for bb in blocks:
@@ -2948,8 +3018,7 @@ class FunctionTranslator:
             # states come from the pre-pass above, so a back edge's
             # predecessor is known here even though it sits later in address
             # order.
-            incoming = _incoming_flag_state(preds[bb.start], settled_state,
-                                            bb.start == start)
+            incoming = block_incoming(bb, settled_state)
 
             stmts, out_state[bb.start] = lift_basic_block(
                 self.lifter, bb, flag_state=incoming)
@@ -3127,7 +3196,7 @@ class BatchTranslator:
                  icall_sites_json_path=None, image_format="xbe",
                  reg_switch_json_path=None, import_stubs=None):
         self.xbe_path = xbe_path
-        # HobbitRecomp: "macho" skips the XBE banner and SEH/setjmp detection.
+        # "macho" skips the XBE banner and SEH/setjmp detection.
         self.image_format = image_format
         # {stub VA: C name} of import stubs; called, declared in imports.h,
         # never lifted or stubbed.
@@ -3196,8 +3265,8 @@ class BatchTranslator:
             force_returns=force_returns, icall_sites=self.icall_sites)
         self.translator.protected_function_starts = set(
             protected_function_starts or ())
-        for explicit_helper in (seh_prolog, seh_epilog):
-            if explicit_helper not in (None, 0):
+        for explicit_helper in _as_addr_set(seh_prolog) | _as_addr_set(seh_epilog):
+            if explicit_helper != 0:
                 self.translator.protected_function_starts.add(explicit_helper)
         if coalesce_json_paths:
             self.translator.discover_static_indirect_targets(coalescing=True)
@@ -3216,7 +3285,9 @@ class BatchTranslator:
         # Detect once here so the result can be reported and overridden from
         # the command line without retaining an address of a removed fragment.
         if image_format != "xbe":
-            seh_prolog, seh_epilog = (), None   # gcc code has no SEH
+            # gcc code has no SEH, and detection only knows the XBE helpers;
+            # a PE front end names its MSVC helpers explicitly.
+            seh_prolog = seh_prolog if seh_prolog is not None else ()
         elif seh_prolog is None or seh_epilog is None:
             found_prologs, found_epilog = detect_seh_helpers(
                 helper_func_db, self.xbe_data, verbose=True)
@@ -3241,35 +3312,16 @@ class BatchTranslator:
         seh_prologs = frozenset(seh_prologs)
         self.translator.lifter.SEH_PROLOGS = seh_prologs
         self.translator.lifter.SEH_PROLOG = min(seh_prologs) if seh_prologs else None
-        self.translator.lifter.SEH_EPILOG = seh_epilog
-        self.translator.lifter.SEH_HELPERS = seh_prologs | (
-            {seh_epilog} if seh_epilog is not None else set())
+        seh_epilogs = frozenset(_as_addr_set(seh_epilog))
+        self.translator.lifter.SEH_EPILOGS = seh_epilogs
+        self.translator.lifter.SEH_EPILOG = min(seh_epilogs) if seh_epilogs else None
+        self.translator.lifter.SEH_HELPERS = seh_prologs | seh_epilogs
         self.translator.lifter.SETJMP_FN = setjmp_fn
         self.translator.lifter.LONGJMP_FN = longjmp_fn
         if not coalesce_json_paths:
             self.translator.discover_static_indirect_targets()
         self.translator.discover_cfg_ownership()
         self.translator.discover_jump_table_entries()
-
-    def get_functions_by_category(self, categories=None, exclude_categories=None):
-        """
-        Get function addresses filtered by category.
-        Returns list of (addr, func_info) tuples.
-        """
-        result = []
-        for addr, func_info in sorted(self.func_db.items()):
-            if addr in self.translator.owned_function_starts:
-                continue
-            cls_info = self.classification_db.get(addr, {})
-            cat = cls_info.get("category", "unknown")
-
-            if categories and cat not in categories:
-                continue
-            if exclude_categories and cat in exclude_categories:
-                continue
-
-            result.append((addr, func_info))
-        return result
 
     def _make_declaration(self, addr, name):
         """Generate a function declaration string.
@@ -3290,118 +3342,6 @@ class BatchTranslator:
         if not func_info:
             return None
         return self.translator.translate_function(addr, func_info)
-
-    def translate_batch(self, func_list, output_file=None, max_funcs=None,
-                        verbose=False):
-        """
-        Translate a batch of functions.
-
-        func_list: list of (addr, func_info) tuples
-        output_file: path to write combined C output
-        max_funcs: limit number of functions
-        verbose: print progress
-
-        Returns dict with statistics.
-        """
-        os.makedirs(self.output_dir, exist_ok=True)
-
-        func_list = [item for item in func_list
-                     if item[0] not in self.translator.owned_function_starts]
-
-        if max_funcs:
-            func_list = func_list[:max_funcs]
-
-        stats = {
-            "total": len(func_list),
-            "translated": 0,
-            "failed": 0,
-            "total_lines": 0,
-            "total_insns": 0,
-        }
-
-        c_chunks = []
-        c_chunks.append("/**")
-        c_chunks.append(f" * {_config.banner_name(getattr(self, 'title', None))}"
-                        f" - Mechanically Translated Game Code")
-        c_chunks.append(f" * Generated by tools/recomp from original Xbox x86 code.")
-        c_chunks.append(f" * Functions: {len(func_list)}")
-        c_chunks.append(" */")
-        c_chunks.append("")
-        c_chunks.append('#define RECOMP_GENERATED_CODE')
-        c_chunks.append('#include "recomp_types.h"')
-        c_chunks.append('#include <math.h>')
-        c_chunks.append("")
-        c_chunks.append("/* Forward declarations */")
-
-        # Forward declarations
-        for addr, func_info in func_list:
-            name = _func_ident(addr, func_info.get("name", f"sub_{addr:08X}"))
-            decl = self._make_declaration(addr, name)
-            c_chunks.append(f"{decl};")
-        c_chunks.append("")
-        c_chunks.append("/* ═══════════════════════════════════════════════════ */")
-        c_chunks.append("")
-
-        # Translate each function
-        for i, (addr, func_info) in enumerate(func_list):
-            name = _func_ident(addr, func_info.get("name", f"sub_{addr:08X}"))
-            if verbose and (i % 100 == 0 or i == len(func_list) - 1):
-                print(f"  [{i+1}/{len(func_list)}] Translating {name} at 0x{addr:08X}...")
-
-            code = self.translator.translate_function(addr, func_info)
-            if code:
-                c_chunks.append(code)
-                stats["translated"] += 1
-                stats["total_lines"] += code.count("\n")
-
-                # Count instructions
-                num_insns = func_info.get("num_instructions", 0)
-                stats["total_insns"] += num_insns
-            else:
-                c_chunks.append(f"/* FAILED to translate {name} at 0x{addr:08X} */")
-                c_chunks.append(f"void {name}(void) {{ /* translation failed */ }}")
-                c_chunks.append("")
-                stats["failed"] += 1
-
-        # Write output
-        if output_file is None:
-            output_file = os.path.join(self.output_dir, "recompiled.c")
-
-        output_text = "\n".join(c_chunks)
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(output_text)
-
-        stats["output_file"] = output_file
-        stats["output_size"] = len(output_text)
-
-        return stats
-
-    def translate_by_category(self, categories, output_prefix=None,
-                              max_per_file=500, verbose=False):
-        """
-        Translate functions grouped by category, one file per category.
-        Returns dict with per-category stats.
-        """
-        os.makedirs(self.output_dir, exist_ok=True)
-        all_stats = {}
-
-        for cat in categories:
-            funcs = self.get_functions_by_category(categories={cat})
-            if not funcs:
-                continue
-
-            prefix = output_prefix or cat
-            out_file = os.path.join(self.output_dir, f"{prefix}.c")
-
-            if verbose:
-                print(f"\nCategory: {cat} ({len(funcs)} functions)")
-
-            stats = self.translate_batch(
-                funcs, output_file=out_file,
-                max_funcs=max_per_file, verbose=verbose)
-            all_stats[cat] = stats
-
-        return all_stats
 
     def translate_shard(self, func_list, manual=(), verbose=False):
         """Translate (addr, func_info) pairs without writing any file.

@@ -223,6 +223,7 @@ typedef struct RecompThreadState {
     RecompXmm ts_xmm4, ts_xmm5, ts_xmm6, ts_xmm7;
     RecompMmx ts_mm0, ts_mm1, ts_mm2, ts_mm3;
     RecompMmx ts_mm4, ts_mm5, ts_mm6, ts_mm7;
+    int ts_eflags_id;
 } RecompThreadState;
 
 extern RECOMP_TLS RecompThreadState g_thread_state;
@@ -349,6 +350,9 @@ int recomp_guest_longjmp(uint32_t buf_va, uint32_t value);
  * memmove's overlapping case is the same instruction and the same bug.
  */
 #define g_df (g_thread_state.ts_df)
+/* EFLAGS.ID (bit 21). Nothing reads it but pushfd: the MSVC CRT asks "is
+ * cpuid there" by flipping it with popfd and reading it back. */
+#define g_eflags_id (g_thread_state.ts_eflags_id)
 #define RECOMP_DF_STEP(n) (g_df ? -(int32_t)(n) : (int32_t)(n))
 
 /* x87 control and status. Thread-local for the same reason the x87 stack
@@ -1036,6 +1040,75 @@ static inline RecompXmm XMM_CVT_PD2PS(RecompXmm a) {
     return r;
 }
 
+/* The lane arithmetic below is IEEE double, round to nearest, on x86 and
+ * arm64 alike; the NaN a lane produces is not. x86 returns the first source
+ * that is a NaN, quieted, the destination operand first. arm64 prefers a
+ * signalling NaN in either operand, and its default NaN (inf - inf, 0 * inf)
+ * is positive where x86's has the sign bit set. recomp_pd_lane applies the
+ * x86 rule (Intel SDM vol. 1, table 4-7) to the arm64 result. */
+static inline uint64_t recomp_pd_lane(uint64_t a, uint64_t b, double v) {
+    union { double d; uint64_t q; } r;
+    r.d = v;
+    if (v == v) return r.q;
+    if ((a & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull)
+        return a | 0x0008000000000000ull;
+    if ((b & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull)
+        return b | 0x0008000000000000ull;
+    return 0xFFF8000000000000ull;
+}
+
+/** subpd: two doubles subtracted lane-wise, x86 NaN rule. */
+static inline RecompXmm XMM_SUBPD(RecompXmm a, RecompXmm b) {
+    RecompXmm r; int i;
+    for (i = 0; i < 2; ++i)
+        r.q[i] = recomp_pd_lane(a.q[i], b.q[i], a.d[i] - b.d[i]);
+    return r;
+}
+
+/** mulpd: two doubles multiplied lane-wise, x86 NaN rule. */
+static inline RecompXmm XMM_MULPD(RecompXmm a, RecompXmm b) {
+    RecompXmm r; int i;
+    for (i = 0; i < 2; ++i)
+        r.q[i] = recomp_pd_lane(a.q[i], b.q[i], a.d[i] * b.d[i]);
+    return r;
+}
+
+/** shufpd: the low double out of `a` by imm bit 0, the high out of `b` by
+ * bit 1. */
+static inline RecompXmm XMM_SHUFPD(RecompXmm a, RecompXmm b, uint32_t imm) {
+    RecompXmm r;
+    r.q[0] = a.q[imm & 1u]; r.q[1] = b.q[(imm >> 1) & 1u];
+    return r;
+}
+
+/* CMPPD/CMPSD: the eight predicates of recomp_cmp_pred, over doubles. A
+ * true lane is all ones, 64 bits wide. */
+static inline int recomp_cmp_pred_d(double a, double b, int p) {
+    switch (p & 7) {
+    case 0:  return a == b;
+    case 1:  return a < b;
+    case 2:  return a <= b;
+    case 3:  return a != a || b != b;
+    case 4:  return !(a == b);
+    case 5:  return !(a < b);
+    case 6:  return !(a <= b);
+    default: return !(a != a || b != b);
+    }
+}
+static inline RecompXmm XMM_CMP_PRED_PD(RecompXmm a, RecompXmm b, int p) {
+    RecompXmm r; int i;
+    for (i = 0; i < 2; ++i)
+        r.q[i] = recomp_cmp_pred_d(a.d[i], b.d[i], p) ? ~0ull : 0ull;
+    return r;
+}
+
+/** pmovmskb r32, xmm: the sixteen byte sign bits; bits 16-31 zero. */
+static inline uint32_t XMM_PMOVMSKB(RecompXmm a) {
+    uint32_t m = 0; int i;
+    for (i = 0; i < 16; i++) if (a.b[i] & 0x80) m |= (1u << i);
+    return m;
+}
+
 #define RECOMP_XMM_INT(name, field, n, expr)                              \
     static inline RecompXmm name(RecompXmm a, RecompXmm b) {              \
         RecompXmm r; int i;                                               \
@@ -1057,6 +1130,7 @@ RECOMP_XMM_INT(XMM_PCMPEQD, u, 4,  a.u[i] == b.u[i] ? 0xFFFFFFFFu : 0u)
 RECOMP_XMM_INT(XMM_PCMPGTB, b, 16, (uint8_t)(a.sb[i] > b.sb[i] ? 0xFFu : 0u))
 RECOMP_XMM_INT(XMM_PCMPGTW, w, 8,  (uint16_t)(a.sw[i] > b.sw[i] ? 0xFFFFu : 0u))
 RECOMP_XMM_INT(XMM_PCMPGTD, u, 4,  a.i[i] > b.i[i] ? 0xFFFFFFFFu : 0u)
+RECOMP_XMM_INT(XMM_PMAXSW, w, 8,  (uint16_t)(a.sw[i] > b.sw[i] ? a.sw[i] : b.sw[i]))
 
 /* punpckl*: interleave the low halves (dst lane first); punpckh*: the high
  * halves. off is the first source lane. */
@@ -2018,5 +2092,10 @@ void recomp_unimpl(const char *text, uint32_t va);
 /* x86 raises #DE for a zero divisor or a quotient that does not fit; the
  * lifted div/idiv call this instead of dividing. Logs and aborts. */
 void recomp_divide_error(uint32_t va);
+
+/* cpuid answers from a fixed profile, never the host: a Core 2 Duo E8400,
+ * with only the features whose instructions the lifter translates. leaf is
+ * EAX; out receives EAX, EBX, ECX, EDX. Implemented in recomp_glue.c. */
+void recomp_cpuid(uint32_t leaf, uint32_t out[4]);
 
 #endif /* RECOMP_TYPES_H */
