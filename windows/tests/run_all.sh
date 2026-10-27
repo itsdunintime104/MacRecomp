@@ -184,9 +184,13 @@ def_analyze_pe() {
     PYTEST=tests/test_analyze_pe.py
 }
 
+def_recon_check() {
+    PYTEST=tests/test_recon_check.py
+}
+
 C_TESTS="frame_trace win32_core win32_mem win32_sync win32_fs win32_ui win32_input win32_wmi win32_net win32_winmm win32_bink win32_audio win32_xaudio2 win32_dsound com_guest d3d9_hud d3d9_guest d3dx_shader d3dx_misc d3d9_e2e"
 GPU_TESTS=" d3dx_misc d3d9_e2e "
-PY_TESTS="analyze_pe"
+PY_TESTS="analyze_pe recon_check"
 # shellcheck source=/dev/null
 [ -n "$TESTS_FILE" ] && { . "$TESTS_FILE" || exit 2; }
 ALL="$C_TESTS $PY_TESTS"

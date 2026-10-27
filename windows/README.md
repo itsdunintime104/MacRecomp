@@ -54,7 +54,7 @@ Shell variables, read by `setup.sh` (sourced) and by `game.mk`. Values must not 
 | `APP_IMAGE` | `lhp_win32.exe` | file name of the image copy in `orig.nosync/` |
 | `BINARY_SHA256` | | sha256 of the supported exe |
 | `LIFT_PREFIX` | `lhp` | file prefix of the lifted C |
-| `RECON_ANALYSIS`, `RECON_SWITCH` | `recon/analysis.json`, `recon/switch_tables.json` | lift inputs; `names.json` and `entry_zf.json` are read from the folder of `RECON_ANALYSIS` |
+| `RECON_ANALYSIS`, `RECON_SWITCH` | `recon/analysis.json`, `recon/switch_tables.json` | lift inputs; `names.json` and `entry_zf.json` are read from the folder of `RECON_ANALYSIS`; `analyze_pe.py --entry-zf-out` writes `entry_zf.json` |
 | `GAME_FOLDER` | `LEGO Harry Potter` | folder name under `steamapps/common`, `~/Games` and drives |
 | `GOG_GLOB` | `LEGO*Harry*Potter*` | GOG folder pattern |
 | `DATA_GLOB` | `GAME*.DAT` | data files that must sit next to the exe |
@@ -87,7 +87,7 @@ Shell hook: `game.conf` may define `post_install`, run as the last setup step af
 
 | Folder | Why it is generic |
 |---|---|
-| `pe/` | PE analysis, lift driver, names, symbols, shader extraction, coverage; each takes the binary and the recon files as inputs |
+| `pe/` | PE analysis, lift driver, names, symbols, shader extraction, coverage, `recon_check.py` (reports recon misses); each takes the binary and the recon files as inputs |
 | `win32/` | import inventory, slice assignment and argument-count checks; they read the game's inventory files |
 | `d3d9/` | generator of the D3D9 guest layer and the D3DX export list |
 | `deps/` | builds DXVK, vkd3d-shader and KosmicKrisp |
