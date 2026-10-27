@@ -459,6 +459,9 @@ install_app() {
         # -X: leave out extended attributes. A build folder under ~/Documents
         # carries file-sync attributes that fail codesign --strict.
         run cp -RX "$APP" "$DEST"
+        # One app only: macOS lists every app bundle it finds, so the build copy
+        # would show up in the launcher as a second game.
+        run rm -rf "$APP"
         APP="$DEST"
     else
         echo "built $APP (not installed)"

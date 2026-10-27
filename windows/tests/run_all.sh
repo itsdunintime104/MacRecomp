@@ -50,7 +50,7 @@ DEPS=${RECOMP_DEPS_DIR:-${HPRECOMP_DEPS_DIR:-$ENGINE/../build.nosync/deps}}
 S=$ENGINE/runtime/src
 R=runtime/src
 
-COMMON=(-std=gnu17 -O1 -arch arm64 -Wall -DRECOMP_GLUE_NO_MAIN
+COMMON=(-std=gnu17 -O1 -arch arm64 -Wall -DRECOMP_GLUE_NO_MAIN '-DGAME_SAVE_NAME="RecompTest"'
     -I "$ENGINE/tools/xrecomp/include" -I "$ENGINE/runtime/include" -I runtime/include)
 SDL_I=(-I /opt/homebrew/include -I /opt/homebrew/include/SDL2)
 SDL_L=(-L/opt/homebrew/lib -lSDL2 -framework CoreGraphics -framework CoreFoundation -lobjc)
@@ -170,7 +170,7 @@ def_d3dx_misc() {
 }
 def_d3d9_e2e() {
     FLAGS=(-std=gnu11 -O1 -arch arm64 -Wall -fwrapv -fno-strict-aliasing -ffp-contract=off
-        -DRECOMP_TSO=1 -DRECOMP_GLUE_NO_MAIN
+        -DRECOMP_TSO=1 -DRECOMP_GLUE_NO_MAIN '-DGAME_SAVE_NAME="RecompTest"'
         -I "$ENGINE/tools/xrecomp/include" -I "$ENGINE/runtime/include" -I runtime/include
         "${DXVK_I[@]}" "${SDL_I[@]}" "${VKD3D_I[@]}" tests/test_d3d9_e2e.c
         $R/win32_ui.c $R/gen_d3d9_guest.c $R/d3d9_guest_manual.c $R/d3d9_hud.c $S/hud_core.c $R/d3d9_backend.c $R/com_guest.c $R/frame_trace.c
