@@ -1,13 +1,15 @@
 # Starts the native game with the game folder and the libraries inside this app.
 # Interface: <game binary> <game image .exe> <game folder>. The game folder is
-# read-only to the game; saves go to ~/Library/Application Support/@APP_SAVE_NAME@.
+# read-only to the game; saves go to ~/Library/Application Support/@APP_SAVE_NAME@
+# and shader caches to ~/Library/Caches/@APP_SAVE_NAME@.
 # Overrides: @APP_ENV_PREFIX@_GAME_DIR (game folder), @APP_ENV_PREFIX@_EXE (game image).
 CONTENTS=$(cd "$(dirname "$0")/.." && pwd)
 GAME_DIR="${@APP_ENV_PREFIX@_GAME_DIR:-$DEFAULT_GAME_DIR}"
 EXE="${@APP_ENV_PREFIX@_EXE:-$DEFAULT_EXE}"
 LOGDIR="$HOME/Library/Logs/@APP_SAVE_NAME@"
 SAVEDIR="$HOME/Library/Application Support/@APP_SAVE_NAME@"
-mkdir -p "$LOGDIR" "$SAVEDIR"
+CACHEDIR="$HOME/Library/Caches/@APP_SAVE_NAME@"
+mkdir -p "$LOGDIR" "$SAVEDIR" "$CACHEDIR/dxvk"
 # Keep the newest 20 logs; the run below adds one more.
 ls -1t "$LOGDIR"/run-*.log 2>/dev/null | tail -n +20 | while IFS= read -r old; do rm -f "$old"; done
 STAMP=$(date +%Y-%m-%d_%H%M%S)
@@ -31,5 +33,6 @@ fi
 export VK_DRIVER_FILES="$CONTENTS/Resources/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json"
 export DXVK_WSI_DRIVER=SDL2
 export DXVK_LOG_PATH="$LOGDIR"
+export DXVK_SHADER_CACHE_PATH="$CACHEDIR/dxvk"
 cd "$SAVEDIR"
 exec "$CONTENTS/MacOS/@GAME_ID@" "$EXE" "$GAME_DIR" >"$LOG" 2>&1

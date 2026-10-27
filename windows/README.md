@@ -100,4 +100,4 @@ The HP repo keeps the HP-only tools: `boot/` (HP input scripts and run helpers),
 
 ## Known limits
 
-The runtime still has some values from the first game it ran (LEGO Harry Potter) that every Windows game now shares: the guest exe path `C:\Game\LEGOHarryPotter.exe` and command line, the registry key `WB Games\LEGOHarryPotter`, the shader cache folder `~/Library/Caches/HarryPotterRecomp`, and the names of the developer settings (`HPRECOMP_*`, `HP_TRACE_*`). The user settings of the launcher and of `setup.sh` use `APP_ENV_PREFIX`.
+The runtime still has some values from the first game it ran (LEGO Harry Potter) that every Windows game now shares: the guest exe path `C:\Game\LEGOHarryPotter.exe` and command line, the registry key `WB Games\LEGOHarryPotter`, and the names of the developer settings (`HPRECOMP_*`, `HP_TRACE_*`). The user settings of the launcher and of `setup.sh` use `APP_ENV_PREFIX`.

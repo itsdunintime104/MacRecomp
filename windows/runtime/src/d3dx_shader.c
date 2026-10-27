@@ -1211,13 +1211,17 @@ static int cache_enabled(void)
     return e == NULL || strcmp(e, "0") != 0;
 }
 
-/* $HOME/Library/Caches/HarryPotterRecomp/shaders, created on first use. */
+#ifndef GAME_SAVE_NAME
+#error "GAME_SAVE_NAME is not set (windows/build/game.mk sets it from APP_SAVE_NAME)"
+#endif
+
+/* $HOME/Library/Caches/<GAME_SAVE_NAME>/shaders, created on first use. */
 static int cache_dir(char *dir, size_t size)
 {
     const char *home = getenv("HOME");
     if (home == NULL || home[0] == '\0')
         return 0;
-    static const char *const parts[] = {"/Library", "/Caches", "/HarryPotterRecomp", "/shaders"};
+    static const char *const parts[] = {"/Library", "/Caches", "/" GAME_SAVE_NAME, "/shaders"};
     size_t n = (size_t)snprintf(dir, size, "%s", home);
     for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
         n += (size_t)snprintf(dir + n, n < size ? size - n : 0, "%s", parts[i]);
