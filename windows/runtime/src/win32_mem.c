@@ -20,6 +20,10 @@
 #include "diag.h"
 #include "win32_thunk.h"
 
+#ifndef GAME_EXE_NAME
+#error "GAME_EXE_NAME is not set (windows/build/game.mk sets it from APP_GAME_FILE)"
+#endif
+
 #define W32_ERROR_NO_UNICODE_TRANSLATION 1113u
 #define W32_ERROR_OLD_WIN_VERSION 1150u
 
@@ -174,7 +178,7 @@ static void mem_init(void)
 
     struct sbuf cmd = {0};
     const char *args = getenv("HPRECOMP_ARGS");
-    const char *exe = "\"C:\\Game\\LEGOHarryPotter.exe\"";
+    const char *exe = "\"C:\\Game\\" GAME_EXE_NAME "\"";
     if (sb_add(&cmd, exe, strlen(exe)) != 0 ||
         (args != NULL && args[0] != '\0' &&
          (sb_add(&cmd, " ", 1) != 0 || sb_add(&cmd, args, strlen(args)) != 0))) {

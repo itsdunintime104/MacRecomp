@@ -21,7 +21,7 @@ OUT := $(GAME_ROOT)/build.nosync
 OBJ := $(OUT)/obj
 
 GAME_CONF ?= $(GAME_ROOT)/game.conf
-APP_VARS := APP_NAME APP_EXE APP_ID APP_SAVE_NAME APP_ENV_PREFIX APP_GAME_FILE APP_GAME_TITLE APP_IMAGE
+APP_VARS := APP_NAME APP_EXE APP_ID APP_SAVE_NAME APP_ENV_PREFIX APP_GAME_FILE APP_GAME_TITLE APP_IMAGE GAME_REG_KEY
 ifneq ($(wildcard $(GAME_CONF)),)
 conf_value = $(shell . "$(GAME_CONF)" && printf '%s' "$$$(1)")
 $(foreach v,GAME_ID $(APP_VARS),$(if $(filter undefined,$(origin $(v))),$(eval $(v) := $(call conf_value,$(v)))))
@@ -42,9 +42,11 @@ OPT ?= 2
 CFLAGS := -std=gnu11 -DRECOMP_TSO=$(TSO) -O$(OPT) -DRECOMP_OPT=$(OPT) -fwrapv -fno-strict-aliasing -ffp-contract=off -arch arm64 -I $(ENGINE)/tools/xrecomp/include -I $(GEN) -I $(WIN)/runtime/include -I $(ENGINE)/runtime/include -w -DRECOMP_GLUE_NO_MAIN
 # Host headers for the Windows runtime and the game sources: DXVK, SDL2,
 # FAudio, vkd3d-shader; then the game's settings (GAME_SAVE_NAME from
-# APP_SAVE_NAME, and GAME_CFLAGS).
+# APP_SAVE_NAME, GAME_EXE_NAME from APP_GAME_FILE, GAME_REG_KEY with each \ doubled
+# for C, and GAME_CFLAGS).
 HOST_CFLAGS := -I $(DXVK_PREFIX)/include/dxvk -I $(BREW_PREFIX)/include -I $(BREW_PREFIX)/include/SDL2 -I $(FAUDIO)/include -I $(VKD3D_PREFIX)/include -I $(VKD3D_PREFIX)/include/vkd3d \
-	-DGAME_SAVE_NAME='"$(APP_SAVE_NAME)"' $(GAME_CFLAGS)
+	-DGAME_SAVE_NAME='"$(APP_SAVE_NAME)"' -DGAME_EXE_NAME='"$(APP_GAME_FILE)"' \
+	-DGAME_REG_KEY='"$(subst \,\\,$(GAME_REG_KEY))"' $(GAME_CFLAGS)
 LDLIBS := -L$(DXVK_PREFIX)/lib -ldxvk_d3d9 -Wl,-rpath,$(DXVK_PREFIX)/lib \
 	-L$(VKD3D_PREFIX)/lib -lvkd3d-shader -Wl,-rpath,$(VKD3D_PREFIX)/lib \
 	-L$(FAUDIO)/lib -lFAudio -Wl,-rpath,$(FAUDIO)/lib \

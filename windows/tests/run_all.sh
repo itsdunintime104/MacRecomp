@@ -50,7 +50,7 @@ DEPS=${RECOMP_DEPS_DIR:-${HPRECOMP_DEPS_DIR:-$ENGINE/../build.nosync/deps}}
 S=$ENGINE/runtime/src
 R=runtime/src
 
-COMMON=(-std=gnu17 -O1 -arch arm64 -Wall -DRECOMP_GLUE_NO_MAIN '-DGAME_SAVE_NAME="RecompTest"'
+COMMON=(-std=gnu17 -O1 -arch arm64 -Wall -DRECOMP_GLUE_NO_MAIN '-DGAME_SAVE_NAME="RecompTest"' '-DGAME_EXE_NAME="RecompTest.exe"' '-DGAME_REG_KEY="SOFTWARE\\Recomp\\TestGame"'
     -I "$ENGINE/tools/xrecomp/include" -I "$ENGINE/runtime/include" -I runtime/include)
 SDL_I=(-I /opt/homebrew/include -I /opt/homebrew/include/SDL2)
 SDL_L=(-L/opt/homebrew/lib -lSDL2 -framework CoreGraphics -framework CoreFoundation -lobjc)

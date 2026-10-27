@@ -578,7 +578,7 @@ static void test_registry(void)
 {
     uint32_t hk = galloc(4), type = galloc(4), size = galloc(4), data = galloc(64);
 
-    CHECK(call("RegOpenKeyExA", 5, 0x80000002u, gstr("software\\wb games\\LEGOHARRYPOTTER"), 0u, 0x20019u, hk) == 0);
+    CHECK(call("RegOpenKeyExA", 5, 0x80000002u, gstr("software\\recomp\\TESTGAME"), 0u, 0x20019u, hk) == 0);
     uint32_t key = rd32(hk);
     CHECK(w32_handle_get(key, W32_KIND_REGKEY) != NULL);
 
@@ -606,7 +606,7 @@ static void test_registry(void)
     CHECK(call("RegCloseKey", 1, key) == 0);
     CHECK(call("RegCloseKey", 1, key) == W32_ERROR_INVALID_HANDLE);
     CHECK(call("RegQueryValueExA", 6, key, gstr("PathVal"), 0u, type, data, size) == W32_ERROR_INVALID_HANDLE);
-    CHECK(call("RegOpenKeyExA", 5, 0x80000001u, gstr("Software\\WB Games\\LEGOHarryPotter"), 0u, 0x20019u, hk) == 2);
+    CHECK(call("RegOpenKeyExA", 5, 0x80000001u, gstr("Software\\Recomp\\TestGame"), 0u, 0x20019u, hk) == 2);
     CHECK(call("RegOpenKeyExA", 5, 0x80000002u, gstr("SOFTWARE\\Microsoft\\DirectX"), 0u, 0x20019u, hk) == 2);
 }
 
@@ -634,13 +634,13 @@ static void test_module(void)
 {
     uint32_t buf = galloc(260);
 
-    CHECK(call("GetModuleFileNameA", 3, 0u, buf, 260u) == 27);
-    CHECK(strcmp(gs(buf), "C:\\Game\\LEGOHarryPotter.exe") == 0);
+    CHECK(call("GetModuleFileNameA", 3, 0u, buf, 260u) == 22);
+    CHECK(strcmp(gs(buf), "C:\\Game\\RecompTest.exe") == 0);
     g_err = 0;
     CHECK(call("GetModuleFileNameA", 3, 0x400000u, buf, 10u) == 10);
-    CHECK(strcmp(gs(buf), "C:\\Game\\L") == 0 && g_err == W32_ERROR_INSUFFICIENT_BUFFER);
-    CHECK(call("GetModuleFileNameA", 3, 0u, buf, 27u) == 27);
-    CHECK(strcmp(gs(buf), "C:\\Game\\LEGOHarryPotter.ex") == 0);
+    CHECK(strcmp(gs(buf), "C:\\Game\\R") == 0 && g_err == W32_ERROR_INSUFFICIENT_BUFFER);
+    CHECK(call("GetModuleFileNameA", 3, 0u, buf, 22u) == 22);
+    CHECK(strcmp(gs(buf), "C:\\Game\\RecompTest.ex") == 0);
     CHECK(call("GetModuleFileNameA", 3, 0x10000000u, buf, 260u) == 0 && g_err == 126);
 }
 

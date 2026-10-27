@@ -31,6 +31,13 @@
 #include "win32_thunk.h"
 #include "win32_fs.h"
 
+#ifndef GAME_EXE_NAME
+#error "GAME_EXE_NAME is not set (windows/build/game.mk sets it from APP_GAME_FILE)"
+#endif
+#ifndef GAME_REG_KEY
+#error "GAME_REG_KEY is not set (windows/build/game.mk sets it from GAME_REG_KEY in game.conf)"
+#endif
+
 #define FS_PATH_MAX 1024u /* a guest path, or a host folder from start-up */
 #define FS_HOST_MAX 2304u /* host folder + mapped root + guest path */
 #define FS_MAX_COMP 128
@@ -72,7 +79,7 @@
 #define W32_FILE_END 2u
 
 #define W32_IMAGE_BASE 0x00400000u
-#define W32_EXE_PATH "C:\\Game\\LEGOHarryPotter.exe"
+#define W32_EXE_PATH "C:\\Game\\" GAME_EXE_NAME
 #define W32_VOLUME_SERIAL 0x4C485052u
 #define W32_TEMP_DIR "C:\\Users\\Player\\AppData\\Local\\Temp"
 
@@ -1591,7 +1598,7 @@ static void imp_GetModuleFileNameA(void)
 
 /* ---- Imports: registry ------------------------------------------------- */
 
-/* One key exists, HKLM\SOFTWARE\WB Games\LEGOHarryPotter, in memory only.
+/* One key exists, HKLM\<GAME_REG_KEY>, in memory only.
  * Reg* return their error; they do not set the last error. */
 #define W32_HKEY_CLASSES_ROOT 0x80000000u
 #define W32_HKEY_CURRENT_USER 0x80000001u
@@ -1600,7 +1607,6 @@ static void imp_GetModuleFileNameA(void)
 #define W32_HKEY_PREDEFINED_LAST 0x80000006u
 #define W32_REG_SZ 1u
 #define W32_REG_DWORD 4u
-#define GAME_KEY "SOFTWARE\\WB Games\\LEGOHarryPotter"
 
 struct reg_value {
     char *name;
@@ -1686,7 +1692,7 @@ static void imp_RegOpenKeyExA(void)
     const char *sub = guest_cstr(W32_ARG(1));
 
     pthread_once(&g_reg_once, reg_init);
-    if (root == W32_HKEY_LOCAL_MACHINE && sub != NULL && strcasecmp(sub, GAME_KEY) == 0) {
+    if (root == W32_HKEY_LOCAL_MACHINE && sub != NULL && strcasecmp(sub, GAME_REG_KEY) == 0) {
         struct reg_key *k = calloc(1, sizeof *k);
         if (k == NULL)
             abort();
