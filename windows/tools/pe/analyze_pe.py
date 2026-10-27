@@ -2,7 +2,7 @@
 
 Usage: python -I analyze_pe.py <exe> --ghidra-functions <json> \
            --ghidra-data <json> [--drop-starts <txt>] [--add-starts <txt>] \
-           [--init-tables <txt>] -o <analysis.json>
+           [--init-tables <txt>] -o <analysis.json> [--entry-zf-out <json>]
 
 The engine's sweeper, switch-table finder and lifter all read the Mach-O
 analyzer's schema, so a PE is described in that same schema:
@@ -576,6 +576,80 @@ def code_end(pe: PE) -> int:
     return pe.image_base + text["va"] + len(raw.rstrip(b"\xcc"))
 
 
+def image_code(pe: PE) -> Code:
+    """Decoder over the mapped image (.rsrc aside); code is .text up to
+    its 0xCC tail."""
+    image = bytearray()
+    for s in pe.sections:
+        if s["name"] == ".rsrc":
+            continue
+        va = s["va"]
+        raw = pe.data[s["roff"]:s["roff"] + min(s["rsize"], s["vsize"])]
+        image[len(image):] = bytes(va - len(image)) if va > len(image) else b""
+        image[va:va + len(raw)] = raw
+    text = pe.section(".text")
+    return Code(bytes(image), pe.image_base, pe.image_base + text["va"],
+                code_end(pe))
+
+
+class EntryFlags(NamedTuple):
+    """ZF at entry is (reg & mask) == value."""
+    reg: str
+    mask: int
+    value: int
+
+
+# The CRT x87 classifier: `mov eax,[esp+8]; and eax,0x7FF00000;
+# cmp eax,0x7FF00000; je +n; ret`. It returns ZF set when the double's
+# exponent is all ones (NaN or infinity).
+_X87_CLASSIFIER = re.compile(
+    rb"\x8b\x44\x24\x08\x25\x00\x00\xf0\x7f\x3d\x00\x00\xf0\x7f\x74.\xc3",
+    re.S)
+_X87_SPECIAL = EntryFlags("eax", 0x7FF00000, 0x7FF00000)
+
+
+def direct_calls(code: Code) -> dict[int, list[int]]:
+    """Sites of the `call rel32` instructions into the code, by target. A
+    site is an E8 byte whose rel32 lands in the code and that decodes as
+    that call."""
+    sites: dict[int, list[int]] = {}
+    lo, hi = code.lo - code.base, code.hi - code.base
+    for m in re.finditer(rb"\xe8", code.image[lo:hi - 4]):
+        site = code.lo + m.start()
+        target = site + 5 + struct.unpack_from("<i", code.image,
+                                                lo + m.start() + 1)[0]
+        if code.lo <= target < code.hi and (
+                insn := code.at(site)) is not None and insn.target == target:
+            sites.setdefault(target, []).append(site)
+    return sites
+
+
+def entry_zf(code: Code, starts: Set[int],
+             calls: Mapping[int, Sequence[int]]) -> dict[int, EntryFlags]:
+    """Functions that read ZF at entry, set by the CRT x87 classifier: F
+    such that `call classifier; call F` occurs and every direct call to F
+    comes right after a classifier call."""
+    after = {site + 5 for h in starts
+             if _X87_CLASSIFIER.fullmatch(code.image, h - code.base,
+                                          h - code.base + 17)
+             for site in calls.get(h, ())}
+    found = {}
+    for site in after:
+        insn = code.at(site)
+        f = insn.target if insn is not None and insn.kind is Kind.CALL else None
+        if f is not None and f in starts and all(s in after
+                                                  for s in calls[f]):
+            found[f] = _X87_SPECIAL
+    return dict(sorted(found.items()))
+
+
+def entry_zf_json(contracts: Mapping[int, EntryFlags]) -> str:
+    """recon/entry_zf.json text: the lifter's entry-flag contracts."""
+    return json.dumps({f"0x{va:X}": {"reg": c.reg, "mask": f"0x{c.mask:X}",
+                                     "value": f"0x{c.value:X}"}
+                       for va, c in contracts.items()}, indent=1)
+
+
 def _functions(pe: PE, ghidra: list[dict[str, Any]],
                ghidra_data: list[dict[str, Any]], drop: frozenset[int],
                add: frozenset[int], init_tables: Sequence[tuple[int, int]]
@@ -588,17 +662,7 @@ def _functions(pe: PE, ghidra: list[dict[str, Any]],
     (notes/stub_triage.md). find_functions keeps a start on evidence and
     sets its span from a recursive descent.
     """
-    text = pe.section(".text")
-    lo = pe.image_base + text["va"]
-    image = bytearray()
-    for s in pe.sections:
-        if s["name"] == ".rsrc":
-            continue
-        va = s["va"]
-        raw = pe.data[s["roff"]:s["roff"] + min(s["rsize"], s["vsize"])]
-        image[len(image):] = bytes(va - len(image)) if va > len(image) else b""
-        image[va:va + len(raw)] = raw
-    code = Code(bytes(image), pe.image_base, lo, code_end(pe))
+    code = image_code(pe)
     rows = [f for f in ghidra if code.lo <= f["addr"] < code.hi]
     candidates = {f["addr"] for f in rows} | add
     # Ghidra marks some returning routines no-return (__fload_withFB at
@@ -728,9 +792,12 @@ def main() -> None:
     parser.add_argument("--init-tables", type=Path, default=None,
                         help="hex VA ranges of CRT initialiser and terminator tables")
     parser.add_argument("-o", "--output", type=Path, required=True)
+    parser.add_argument("--entry-zf-out", type=Path, default=None,
+                        help="write the entry-flag contracts (entry_zf.json)")
     args = parser.parse_args()
+    data = args.binary.read_bytes()
     result = analyze(
-        args.binary.read_bytes(),
+        data,
         json.loads(args.ghidra_functions.read_text()),
         json.loads(args.ghidra_data.read_text()),
         read_starts(args.drop_starts) if args.drop_starts else frozenset(),
@@ -746,6 +813,12 @@ def main() -> None:
           f'data_in_code {len(result["data_in_code"])}  '
           f'text 0x{text["vmaddr"]:x}+0x{text["vmsize"]:x}')
     print("function evidence", result["pe"]["function_evidence"])
+    if args.entry_zf_out:
+        code = image_code(PE(data))
+        zf = entry_zf(code, {f["addr"] for f in result["functions"]},
+                      direct_calls(code))
+        args.entry_zf_out.write_text(entry_zf_json(zf))
+        print(f"entry_zf {len(zf)}")
 
 
 if __name__ == "__main__":

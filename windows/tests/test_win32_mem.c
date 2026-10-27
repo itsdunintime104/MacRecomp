@@ -544,7 +544,7 @@ static uint32_t verify(uint32_t major, uint32_t minor, uint32_t sp, uint64_t mas
 
 static void test_process(void)
 {
-    CHECK(strcmp(cstr(call("GetCommandLineA", NULL)), "\"C:\\Game\\LEGOHarryPotter.exe\" -windowed") == 0);
+    CHECK(strcmp(cstr(call("GetCommandLineA", NULL)), "\"C:\\Game\\RecompTest.exe\" -windowed") == 0);
     uint32_t si = gbuf(68);
     call("GetStartupInfoA", A(si));
     int zero = 1;

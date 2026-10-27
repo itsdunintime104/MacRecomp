@@ -50,7 +50,7 @@ DEPS=${RECOMP_DEPS_DIR:-${HPRECOMP_DEPS_DIR:-$ENGINE/../build.nosync/deps}}
 S=$ENGINE/runtime/src
 R=runtime/src
 
-COMMON=(-std=gnu17 -O1 -arch arm64 -Wall -DRECOMP_GLUE_NO_MAIN '-DGAME_SAVE_NAME="RecompTest"'
+COMMON=(-std=gnu17 -O1 -arch arm64 -Wall -DRECOMP_GLUE_NO_MAIN '-DGAME_SAVE_NAME="RecompTest"' '-DGAME_EXE_NAME="RecompTest.exe"' '-DGAME_REG_KEY="SOFTWARE\\Recomp\\TestGame"'
     -I "$ENGINE/tools/xrecomp/include" -I "$ENGINE/runtime/include" -I runtime/include)
 SDL_I=(-I /opt/homebrew/include -I /opt/homebrew/include/SDL2)
 SDL_L=(-L/opt/homebrew/lib -lSDL2 -framework CoreGraphics -framework CoreFoundation -lobjc)
@@ -184,9 +184,13 @@ def_analyze_pe() {
     PYTEST=tests/test_analyze_pe.py
 }
 
+def_recon_check() {
+    PYTEST=tests/test_recon_check.py
+}
+
 C_TESTS="frame_trace win32_core win32_mem win32_sync win32_fs win32_ui win32_input win32_wmi win32_net win32_winmm win32_bink win32_audio win32_xaudio2 win32_dsound com_guest d3d9_hud d3d9_guest d3dx_shader d3dx_misc d3d9_e2e"
 GPU_TESTS=" d3dx_misc d3d9_e2e "
-PY_TESTS="analyze_pe"
+PY_TESTS="analyze_pe recon_check"
 # shellcheck source=/dev/null
 [ -n "$TESTS_FILE" ] && { . "$TESTS_FILE" || exit 2; }
 ALL="$C_TESTS $PY_TESTS"

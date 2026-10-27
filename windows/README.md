@@ -34,7 +34,7 @@ include $(ENGINE)/windows/build/game.mk
 | `GAME_TESTS` | no | the game's test list for `run_all.sh --tests` |
 | `GEN`, `DEPS`, `OPT`, `TSO`, `GAME_DIR`, `GAME_IMAGE` | no | lift output (default `generated.nosync`), graphics libraries (default `build.nosync/deps`), optimisation, x86 ordering, and the game folder and image the app launcher uses by default |
 
-`game.mk` reads `GAME_ID` and the `APP_*` names from `game.conf`, unless the Makefile or the command line sets them. It sets `GAME_SAVE_NAME` from `APP_SAVE_NAME`. Targets: `all` (builds `build.nosync/$(GAME_ID)`), `app` (`build.nosync/$(APP_NAME).app`) and `test`.
+`game.mk` reads `GAME_ID`, the `APP_*` names and `GAME_REG_KEY` from `game.conf`, unless the Makefile or the command line sets them. It sets the C macros `GAME_SAVE_NAME` from `APP_SAVE_NAME`, `GAME_EXE_NAME` from `APP_GAME_FILE` and `GAME_REG_KEY` from `GAME_REG_KEY`. Targets: `all` (builds `build.nosync/$(GAME_ID)`), `app` (`build.nosync/$(APP_NAME).app`) and `test`.
 
 ### game.conf
 
@@ -48,12 +48,13 @@ Shell variables, read by `setup.sh` (sourced) and by `game.mk`. Values must not 
 | `APP_ID` | `local.harrypotterrecomp` | bundle id |
 | `APP_SAVE_NAME` | `HarryPotterRecomp` | save and log folder name |
 | `APP_ENV_PREFIX` | `HPRECOMP` | prefix of the user settings: `<prefix>_GAME_DIR`, `<prefix>_EXE` (launcher), `<prefix>_DEPS_DIR`, `<prefix>_BUILD_LOCK` (setup) |
-| `APP_GAME_FILE` | `LEGOHarryPotter.exe` | exe file name in the game folder |
+| `APP_GAME_FILE` | `LEGOHarryPotter.exe` | exe file name in the game folder; also the guest exe path `C:\Game\<file>` and the command line |
+| `GAME_REG_KEY` | `SOFTWARE\WB Games\LEGOHarryPotter` | the one HKLM registry key the guest can open |
 | `APP_GAME_TITLE` | `LEGO Harry Potter: Years 1-4` | title in messages |
 | `APP_IMAGE` | `lhp_win32.exe` | file name of the image copy in `orig.nosync/` |
 | `BINARY_SHA256` | | sha256 of the supported exe |
 | `LIFT_PREFIX` | `lhp` | file prefix of the lifted C |
-| `RECON_ANALYSIS`, `RECON_SWITCH` | `recon/analysis.json`, `recon/switch_tables.json` | lift inputs; `names.json` and `entry_zf.json` are read from the folder of `RECON_ANALYSIS` |
+| `RECON_ANALYSIS`, `RECON_SWITCH` | `recon/analysis.json`, `recon/switch_tables.json` | lift inputs; `names.json` and `entry_zf.json` are read from the folder of `RECON_ANALYSIS`; `analyze_pe.py --entry-zf-out` writes `entry_zf.json` |
 | `GAME_FOLDER` | `LEGO Harry Potter` | folder name under `steamapps/common`, `~/Games` and drives |
 | `GOG_GLOB` | `LEGO*Harry*Potter*` | GOG folder pattern |
 | `DATA_GLOB` | `GAME*.DAT` | data files that must sit next to the exe |
@@ -86,7 +87,7 @@ Shell hook: `game.conf` may define `post_install`, run as the last setup step af
 
 | Folder | Why it is generic |
 |---|---|
-| `pe/` | PE analysis, lift driver, names, symbols, shader extraction, coverage; each takes the binary and the recon files as inputs |
+| `pe/` | PE analysis, lift driver, names, symbols, shader extraction, coverage, `recon_check.py` (reports recon misses); each takes the binary and the recon files as inputs |
 | `win32/` | import inventory, slice assignment and argument-count checks; they read the game's inventory files |
 | `d3d9/` | generator of the D3D9 guest layer and the D3DX export list |
 | `deps/` | builds DXVK, vkd3d-shader and KosmicKrisp |
@@ -100,4 +101,4 @@ The HP repo keeps the HP-only tools: `boot/` (HP input scripts and run helpers),
 
 ## Known limits
 
-The runtime still has some values from the first game it ran (LEGO Harry Potter) that every Windows game now shares: the guest exe path `C:\Game\LEGOHarryPotter.exe` and command line, the registry key `WB Games\LEGOHarryPotter`, and the names of the developer settings (`HPRECOMP_*`, `HP_TRACE_*`). The user settings of the launcher and of `setup.sh` use `APP_ENV_PREFIX`.
+The developer settings keep the names from the first game the runtime ran (LEGO Harry Potter): `HPRECOMP_*` and `HP_TRACE_*`. The user settings of the launcher and of `setup.sh` use `APP_ENV_PREFIX`.

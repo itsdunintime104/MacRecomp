@@ -71,3 +71,20 @@ def test_backward_jump_is_inside_owner_extent() -> None:
         "c3")               # 100b ret
     assert spans(code, {0x1000, 0x1008}, {0x1000}) == {0x1000: 0x100c}
 
+
+def test_entry_zf_needs_every_call_after_the_classifier() -> None:
+    def call(site: int, target: int) -> bytes:
+        return b"\xe8" + (target - site - 5).to_bytes(4, "little", signed=True)
+    code = (bytes.fromhex("8b442408" "250000f07f" "3d0000f07f" "7401" "c3"
+                          "c3")                            # 1000 classifier
+            + call(0x1012, 0x1000) + call(0x1017, 0x1040)  # 1012 then F1
+            + call(0x101C, 0x1000) + call(0x1021, 0x1041)  # 101c then F2
+            + call(0x1026, 0x1041) + b"\xc3")              # 1026 F2 alone
+    code += b"\xcc" * (0x40 - len(code)) + b"\xc3\xc3"     # 1040 F1, 1041 F2
+    c = A.Code(code, BASE, BASE, BASE + len(code))
+    zf = A.entry_zf(c, {0x1000, 0x1012, 0x1040, 0x1041}, A.direct_calls(c))
+    assert zf == {0x1040: A.EntryFlags("eax", 0x7FF00000, 0x7FF00000)}
+    assert A.entry_zf_json(zf) == (
+        '{\n "0x1040": {\n  "reg": "eax",\n  "mask": "0x7FF00000",\n'
+        '  "value": "0x7FF00000"\n }\n}')
+
