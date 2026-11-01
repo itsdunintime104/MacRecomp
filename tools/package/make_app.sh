@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build <app name>.app for the game described by game.toml, from build.nosync/<game id> and cghelper.
 # Usage: PYTHON=<python> make_app.sh <game.toml>
-# The launcher runs the Steam copy of the game binary, so the app works without the repo.
+# The app holds a clone of the user's Steam copy (Contents/Resources/<game>.app), so it works without the repo or the Steam folder.
 set -eu
 
 ENGINE=$(cd "$(dirname "$0")/../.." && pwd)
@@ -19,6 +19,11 @@ APP="$STAGE/$APP_NAME.app"
 LAUNCHER_EXE="$APP_EXE"
 eval "GAME_APP=\"\${${ENV_PREFIX}_APP:-}\""
 GAME_APP="${GAME_APP:-$HOME/Library/Application Support/Steam/steamapps/common/$STEAM_APP}"
+[ -f "$GAME_APP/Contents/MacOS/$GAME_EXE" ] || {
+    echo "make_app: $GAME_TITLE not found at $GAME_APP (install it from Steam, or set ${ENV_PREFIX}_APP to its .app bundle)" >&2
+    exit 1
+}
+GAME_BUNDLE=$(basename "$GAME_APP")
 
 for f in "$GAME_ID" cghelper; do
     [ -x "$BUILD/$f" ] || { echo "make_app: missing $BUILD/$f (build first)" >&2; exit 1; }
@@ -68,13 +73,18 @@ if [ -n "$ICON" ] && [ -f "$ICON" ]; then
     plutil -insert CFBundleIconFile -string AppIcon "$APP/Contents/Info.plist"
 fi
 
-# The launcher defaults to the game path in effect now; the path is single-quote-escaped.
-DEFAULT_ESC=$(printf '%s' "$GAME_APP" | sed "s/'/'\\\\''/g")
+# The launcher defaults to the clone of the game bundle inside the app. cp -c clones on APFS
+# (no extra disk space); on another disk it falls back to a full copy.
+cp -cR "$GAME_APP" "$APP/Contents/Resources/$GAME_BUNDLE" 2>/dev/null || {
+    rm -rf "$APP/Contents/Resources/$GAME_BUNDLE"
+    echo "make_app: cannot clone $GAME_APP (another disk?); copying it in full" >&2
+    cp -R "$GAME_APP" "$APP/Contents/Resources/$GAME_BUNDLE"
+}
 {
     echo '#!/bin/sh'
-    echo "DEFAULT_${ENV_PREFIX}_APP='$DEFAULT_ESC'"
     sed -e "s|@ENV_PREFIX@|$ENV_PREFIX|g" -e "s|@GAME_TITLE@|$GAME_TITLE|g" -e "s|@APP_NAME@|$APP_NAME|g" \
         -e "s|@SUPPORT_DIR@|$SUPPORT_DIR|g" -e "s|@GAME_EXE@|$GAME_EXE|g" -e "s|@GAME_ID@|$GAME_ID|g" \
+        -e "s|@GAME_BUNDLE@|$GAME_BUNDLE|g" \
         "$ENGINE/tools/package/launcher.sh.in"
 } > "$APP/Contents/MacOS/$LAUNCHER_EXE"
 chmod +x "$APP/Contents/MacOS/$LAUNCHER_EXE"
@@ -83,5 +93,5 @@ xattr -cr "$APP"
 codesign --force --deep -s - "$APP"
 rm -rf "$OUT_APP"
 [ -z "$OLD_APP_NAME" ] || rm -rf "$BUILD/$OLD_APP_NAME"   # the bundle's old name
-ditto "$APP" "$OUT_APP"
+cp -cR "$APP" "$OUT_APP" 2>/dev/null || { rm -rf "$OUT_APP"; cp -R "$APP" "$OUT_APP"; }
 echo "built $OUT_APP"

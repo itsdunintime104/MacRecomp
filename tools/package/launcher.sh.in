@@ -1,9 +1,10 @@
 DIR=$(cd "$(dirname "$0")" && pwd)
-@ENV_PREFIX@_APP="${@ENV_PREFIX@_APP:-$DEFAULT_@ENV_PREFIX@_APP}"
+CONTENTS=$(cd "$DIR/.." && pwd)
+@ENV_PREFIX@_APP="${@ENV_PREFIX@_APP:-$CONTENTS/Resources/@GAME_BUNDLE@}"
 export @ENV_PREFIX@_APP
 GAME="$@ENV_PREFIX@_APP/Contents/MacOS/@GAME_EXE@"
 if [ ! -f "$GAME" ]; then
-    MSG="@GAME_TITLE@ was not found at: $@ENV_PREFIX@_APP. Install it from Steam, or set @ENV_PREFIX@_APP to its .app bundle."
+    MSG="@GAME_TITLE@ was not found at: $@ENV_PREFIX@_APP. Run setup.sh again to put the game in this app, or set @ENV_PREFIX@_APP to its .app bundle."
     echo "@APP_NAME@: $MSG" >&2
     if [ "${@ENV_PREFIX@RECOMP_NO_GUI:-}" != 1 ]; then
         osascript - "$MSG" >/dev/null 2>&1 <<'APPLESCRIPT' || true

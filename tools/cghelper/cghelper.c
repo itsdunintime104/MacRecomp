@@ -2,9 +2,10 @@
  *
  * Built x86_64 and run under Rosetta, because the game bundle's Cg.framework
  * has only i386 and x86_64 slices. runtime/src/thunk_cg.c starts it with the
- * socket on fd CGW_FD. The framework is loaded with dlopen from
- * $HOBBIT_APP/Contents/Frameworks/Cg.framework/Versions/A/Cg; its install
- * name is @executable_path-relative, so it cannot be linked by path.
+ * socket on fd CGW_FD and the game bundle as argv[1]. The framework is loaded
+ * with dlopen from <bundle>/Contents/Frameworks/Cg.framework/Versions/A/Cg, or
+ * from <bundle>/Contents/Frameworks/Cg.framework/Cg when that is absent; its
+ * install name is @executable_path-relative, so it cannot be linked by path.
  *
  * Build: clang -std=gnu11 -O1 -arch x86_64 -o <out>/cghelper tools/cghelper/cghelper.c */
 #include <dlfcn.h>
@@ -16,10 +17,9 @@
 
 #include "cg_wire.h"
 
-/* Default bundle, relative to $HOME, when HOBBIT_APP is unset. */
-#define DEFAULT_APP_REL \
-    "/Library/Application Support/Steam/steamapps/common/LEGO - The Hobbit/LEGO The Hobbit.app"
-#define CG_SUBPATH "/Contents/Frameworks/Cg.framework/Versions/A/Cg"
+/* Where the game bundle keeps its Cg library, in the order tried. */
+#define CG_SUBPATH_VERSIONED "/Contents/Frameworks/Cg.framework/Versions/A/Cg"
+#define CG_SUBPATH_FLAT "/Contents/Frameworks/Cg.framework/Cg"
 
 typedef void *H; /* CGcontext, CGprogram, CGparameter, CGhandle */
 
@@ -46,15 +46,23 @@ static int (*p_cgIsParameterUsed)(H, H);
 
 static char g_load_error[1024];
 
-static int load_cg(void)
+static int load_cg(const char *app)
 {
-    const char *app = getenv("HOBBIT_APP");
-    char path[2048];
-    const char *home = getenv("HOME");
-    if (app && *app)
-        snprintf(path, sizeof path, "%s" CG_SUBPATH, app);
-    else
-        snprintf(path, sizeof path, "%s" DEFAULT_APP_REL CG_SUBPATH, home ? home : "");
+    char versioned[2048], flat[2048];
+    if (!app || !*app) {
+        snprintf(g_load_error, sizeof g_load_error, "usage: cghelper <game .app>");
+        return -1;
+    }
+    snprintf(versioned, sizeof versioned, "%s" CG_SUBPATH_VERSIONED, app);
+    snprintf(flat, sizeof flat, "%s" CG_SUBPATH_FLAT, app);
+    const char *path = versioned;
+    if (access(versioned, F_OK) != 0) {
+        if (access(flat, F_OK) != 0) {
+            snprintf(g_load_error, sizeof g_load_error, "no Cg library at %s or %s", versioned, flat);
+            return -1;
+        }
+        path = flat;
+    }
     void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!lib) {
         snprintf(g_load_error, sizeof g_load_error, "dlopen %s: %s", path, dlerror());
@@ -112,9 +120,9 @@ static uint32_t out_h(H h)
     return (uint32_t)v;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
-    int loaded = load_cg() == 0;
+    int loaded = load_cg(argc >= 2 ? argv[1] : NULL) == 0;
     for (;;) {
         struct cgw_req q;
         if (read_full(&q, sizeof q) != 0)

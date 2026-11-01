@@ -456,9 +456,11 @@ install_app() {
         DEST="$HOME/Applications/$APP_NAME.app"
         run mkdir -p "$HOME/Applications"
         run rm -rf "$DEST"
-        # -X: leave out extended attributes. A build folder under ~/Documents
-        # carries file-sync attributes that fail codesign --strict.
-        run cp -RX "$APP" "$DEST"
+        # Clone, so the game inside the app takes no extra space. cp cannot
+        # combine -c with -X, so extended attributes (file-sync attributes from
+        # ~/Documents fail codesign --strict) are cleared after.
+        run cp -cR "$APP" "$DEST" || { run rm -rf "$DEST"; echo "setup: cannot clone the app into ~/Applications (another disk?); copying it in full" >&2; run cp -R "$APP" "$DEST"; }
+        run xattr -cr "$DEST"
         # One app only: macOS lists every app bundle it finds, so the build copy
         # would show up in the launcher as a second game.
         run rm -rf "$APP"
@@ -490,6 +492,7 @@ if command -v post_install >/dev/null 2>&1; then
     fi
 fi
 echo
+echo "The game files are inside the app (a clone, so no extra disk space on the same disk); the app no longer reads $GAME_DIR."
 echo "Start it by double-clicking $APP, or run: open \"$APP\""
 echo "Saves: $HOME/Library/Application Support/$APP_SAVE_NAME/"
 echo "Logs: $HOME/Library/Logs/$APP_SAVE_NAME/"

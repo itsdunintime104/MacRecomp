@@ -1,11 +1,12 @@
-# Starts the native game with the game folder and the libraries inside this app.
+# Starts the native game with the game folder and the libraries inside this app
+# (Contents/Resources/game).
 # Interface: <game binary> <game image .exe> <game folder>. The game folder is
 # read-only to the game; saves go to ~/Library/Application Support/@APP_SAVE_NAME@
 # and shader caches to ~/Library/Caches/@APP_SAVE_NAME@.
 # Overrides: @APP_ENV_PREFIX@_GAME_DIR (game folder), @APP_ENV_PREFIX@_EXE (game image).
 CONTENTS=$(cd "$(dirname "$0")/.." && pwd)
-GAME_DIR="${@APP_ENV_PREFIX@_GAME_DIR:-$DEFAULT_GAME_DIR}"
-EXE="${@APP_ENV_PREFIX@_EXE:-$DEFAULT_EXE}"
+GAME_DIR="${@APP_ENV_PREFIX@_GAME_DIR:-$CONTENTS/Resources/game}"
+EXE="${@APP_ENV_PREFIX@_EXE:-$GAME_DIR/@APP_GAME_FILE@}"
 LOGDIR="$HOME/Library/Logs/@APP_SAVE_NAME@"
 SAVEDIR="$HOME/Library/Application Support/@APP_SAVE_NAME@"
 CACHEDIR="$HOME/Library/Caches/@APP_SAVE_NAME@"
@@ -16,7 +17,7 @@ STAMP=$(date +%Y-%m-%d_%H%M%S)
 LOG="$LOGDIR/run-$STAMP.log"
 MSG=
 if [ -z "$GAME_DIR" ] || [ ! -f "$GAME_DIR/@APP_GAME_FILE@" ]; then
-    MSG="@APP_GAME_TITLE@ was not found at: $GAME_DIR. Set @APP_ENV_PREFIX@_GAME_DIR to the folder that holds @APP_GAME_FILE@."
+    MSG="@APP_GAME_TITLE@ was not found at: $GAME_DIR. Run setup.sh again to put the game in this app, or set @APP_ENV_PREFIX@_GAME_DIR to the folder that holds @APP_GAME_FILE@."
 elif [ -z "$EXE" ] || [ ! -f "$EXE" ]; then
     MSG="The game image was not found at: $EXE. Set @APP_ENV_PREFIX@_EXE to the path of @APP_IMAGE@."
 fi

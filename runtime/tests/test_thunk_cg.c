@@ -1,8 +1,8 @@
 /* Unit test for the Cg thunks: compile one vertex shader with the game's
  * profile (arbvp1, CG_SOURCE) through the thunks and the x86_64 helper, then
  * create it again from the compile cache (a temp folder via HOBBIT_CG_CACHE)
- * and compare the two programs. Needs HOBBIT_CGHELPER (and HOBBIT_APP unless
- * the bundle is at the default path). Prints "ok" and exits 0 when every
+ * and compare the two programs. Needs HOBBIT_CGHELPER and HOBBIT_APP (the game
+ * .app whose Cg the helper loads). Prints "ok" and exits 0 when every
  * check passes. */
 #include <dirent.h>
 #include <stdio.h>
