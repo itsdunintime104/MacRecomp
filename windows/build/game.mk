@@ -106,9 +106,9 @@ test:
 
 # Double-clickable bundle "build.nosync/$(APP_NAME).app" with every non-system
 # library inside it (windows/tools/package/make_app.sh; check it with
-# windows/tools/package/check_app.sh). The launcher uses GAME_DIR (the game
-# folder) and GAME_IMAGE (the game image) by default. make_app.sh reads the
-# APP_* settings from the environment.
+# windows/tools/package/check_app.sh). make_app.sh clones GAME_DIR (the game
+# folder) into the app, and GAME_IMAGE only supplies the icon when the game
+# folder has none. make_app.sh reads the APP_* settings from the environment.
 GAME_DIR ?=
 GAME_IMAGE ?= $(GAME_ROOT)/orig.nosync/$(APP_IMAGE)
 export APP_EXE APP_ID APP_SAVE_NAME APP_ENV_PREFIX APP_GAME_FILE APP_GAME_TITLE APP_IMAGE

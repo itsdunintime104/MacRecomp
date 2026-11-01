@@ -9,10 +9,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_APP = (
-    Path.home() / "Library/Application Support/Steam/steamapps/common/LEGO - The Hobbit/LEGO The Hobbit.app"
-)
-CG_SUBPATH = "Contents/Frameworks/Cg.framework/Versions/A/Cg"
+STEAM_COMMON = Path.home() / "Library/Application Support/Steam/steamapps/common"
+BUNDLES = [
+    "LEGO - The Hobbit/LEGO The Hobbit.app",
+    "LEGO Marvel Super Heroes/LEGO Marvel Super Heroes.app",
+]
+CG_SUBPATHS = [
+    "Contents/Frameworks/Cg.framework/Versions/A/Cg",
+    "Contents/Frameworks/Cg.framework/Cg",
+]
 SOURCES = [
     "runtime/src/thunk_cg.c",
     "runtime/src/dlmalloc.c",
@@ -25,9 +30,10 @@ SOURCES = [
 ]
 
 
-def test_thunk_cg(tmp_path: Path) -> None:
-    app = Path(os.environ.get("HOBBIT_APP") or DEFAULT_APP)
-    if not (app / CG_SUBPATH).is_file():
+@pytest.mark.parametrize("bundle", BUNDLES)
+def test_thunk_cg(tmp_path: Path, bundle: str) -> None:
+    app = STEAM_COMMON / bundle
+    if not any((app / sub).is_file() for sub in CG_SUBPATHS):
         pytest.skip(f"game bundle Cg.framework not found under {app}")
     helper = tmp_path / "cghelper"
     subprocess.run(

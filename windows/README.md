@@ -32,7 +32,7 @@ include $(ENGINE)/windows/build/game.mk
 | `GAME_SRCS` | no | the game's C files (absolute paths): patches, hooks, game-only input |
 | `GAME_CFLAGS` | yes | `-DPE_ENTRY_RVA` and `-DPE_SECTION_COUNT`, which the PE loader checks; optional `-DGAME_SCREEN_WIDTH_VA`, `-DGAME_SCREEN_HEIGHT_VA` (the guest words that hold the configured screen size; without them the D3D9 layer leaves that size alone); any `-I` for the game's headers |
 | `GAME_TESTS` | no | the game's test list for `run_all.sh --tests` |
-| `GEN`, `DEPS`, `OPT`, `TSO`, `GAME_DIR`, `GAME_IMAGE` | no | lift output (default `generated.nosync`), graphics libraries (default `build.nosync/deps`), optimisation, x86 ordering, and the game folder and image the app launcher uses by default |
+| `GEN`, `DEPS`, `OPT`, `TSO`, `GAME_DIR`, `GAME_IMAGE` | no | lift output (default `generated.nosync`), graphics libraries (default `build.nosync/deps`), optimisation, x86 ordering, the game folder that is cloned into the app, and the image that only supplies the icon when the game folder has none |
 
 `game.mk` reads `GAME_ID`, the `APP_*` names and `GAME_REG_KEY` from `game.conf`, unless the Makefile or the command line sets them. It sets the C macros `GAME_SAVE_NAME` from `APP_SAVE_NAME`, `GAME_EXE_NAME` from `APP_GAME_FILE` and `GAME_REG_KEY` from `GAME_REG_KEY`. Targets: `all` (builds `build.nosync/$(GAME_ID)`), `app` (`build.nosync/$(APP_NAME).app`) and `test`.
 

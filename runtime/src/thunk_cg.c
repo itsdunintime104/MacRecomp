@@ -10,8 +10,9 @@
  * tools/cghelper (x86_64, under Rosetta) over a socketpair; see
  * tools/cghelper/cg_wire.h. The helper starts on the first Cg call, which is
  * cgCreateContext. Its path is $<P>_CGHELPER, or "cghelper" next to the
- * running executable. If it cannot start, every Cg call returns 0/NULL and
- * the cause is printed once.
+ * running executable. It gets the game bundle ($<P>_APP) as argv[1] and loads
+ * that bundle's Cg.framework. If it cannot start, every Cg call returns 0/NULL
+ * and the cause is printed once.
  *
  * Returned strings are copied into guest memory:
  * - cgGetProgramString: one block per program, freed on the next call for
@@ -133,6 +134,11 @@ static void helper_start(void)
     if (g_cg_started)
         return;
     g_cg_started = 1;
+    const char *app = getenv(GAME_ENV_APP);
+    if (!app || !*app) {
+        fprintf(stderr, "thunk_cg: %s is not set\n", GAME_ENV_APP);
+        return;
+    }
     char path[4096];
     int sv[2];
     if (helper_path(path, sizeof path) != 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
@@ -154,7 +160,7 @@ static void helper_start(void)
     else
         posix_spawn_file_actions_adddup2(&fa, sv[1], CGW_FD);
     pid_t pid;
-    char *argv[] = {path, NULL};
+    char *argv[] = {path, (char *)app, NULL};
     int rc = posix_spawn(&pid, path, &fa, &attr, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     posix_spawnattr_destroy(&attr);

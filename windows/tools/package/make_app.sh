@@ -9,8 +9,10 @@
 # APP_GAME_FILE (the exe in the game folder), APP_GAME_TITLE (title in messages),
 # APP_IMAGE (file name of the game image the binary runs).
 # Environment: DXVK_PREFIX, VKD3D_PREFIX, BREW_PREFIX (library sources);
-# GAME_DIR, GAME_IMAGE (optional): the game folder and the game image
-# the launcher uses by default. The image is referenced by path, never bundled.
+# GAME_DIR (optional): the game folder, cloned into Contents/Resources/game (an
+# APFS clone: no extra space on the same disk, a full copy otherwise); the
+# launcher runs the game from there. Without it the app needs <APP_ENV_PREFIX>_GAME_DIR.
+# GAME_IMAGE (optional): used only for the icon, when the game folder has none.
 # The app icon comes from the first of the two that has one.
 # KK_PREFIX (optional): install prefix of a patched KosmicKrisp build (see
 # tools/package/patches/); its ICD manifest and library replace Homebrew's.
@@ -158,12 +160,8 @@ else
     echo "make_app: warning: no icon in the game exe; building without an icon" >&2
 fi
 
-# The launcher defaults to GAME_DIR and GAME_IMAGE; each path is single-quote-escaped.
-sq() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
 {
     echo '#!/bin/sh'
-    echo "DEFAULT_GAME_DIR='$(sq "${GAME_DIR:-}")'"
-    echo "DEFAULT_EXE='$(sq "${GAME_IMAGE:-}")'"
     sed -e "s|@APP_NAME@|$APP_NAME|g" -e "s|@GAME_ID@|$GAME_ID|g" \
         -e "s|@APP_SAVE_NAME@|$APP_SAVE_NAME|g" -e "s|@APP_ENV_PREFIX@|$APP_ENV_PREFIX|g" \
         -e "s|@APP_GAME_FILE@|$APP_GAME_FILE|g" -e "s|@APP_GAME_TITLE@|$APP_GAME_TITLE|g" \
@@ -171,8 +169,17 @@ sq() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
 } > "$APP/Contents/MacOS/$APP_EXE"
 chmod +x "$APP/Contents/MacOS/$APP_EXE"
 
+# The game folder goes inside the app before signing, so the signature covers it.
+# cp -c clones on APFS (no extra space); another disk gets a full copy.
+if [ -n "${GAME_DIR:-}" ]; then
+    [ -f "$GAME_DIR/$APP_GAME_FILE" ] || { echo "make_app: GAME_DIR $GAME_DIR does not hold $APP_GAME_FILE" >&2; exit 1; }
+    cp -cR "$GAME_DIR" "$APP/Contents/Resources/game" 2>/dev/null || { rm -rf "$APP/Contents/Resources/game"; echo "make_app: cannot clone $GAME_DIR (another disk?); copying it in full" >&2; cp -R "$GAME_DIR" "$APP/Contents/Resources/game"; }
+else
+    echo "make_app: warning: GAME_DIR is not set; the app has no game inside and needs ${APP_ENV_PREFIX}_GAME_DIR at run time" >&2
+fi
+
 xattr -cr "$APP"
 codesign --force --deep -s - "$APP"
 rm -rf "$OUT_APP"
-ditto "$APP" "$OUT_APP"
+cp -cR "$APP" "$OUT_APP" 2>/dev/null || { rm -rf "$OUT_APP"; cp -R "$APP" "$OUT_APP"; }
 echo "built $OUT_APP"
