@@ -13,7 +13,9 @@ This repo is the shared engine. It holds no game code or game files. Each game h
 2. Clone the game's repo with its submodules, and run `./setup.sh` in it.
 3. Open the app that setup builds.
 
-Setup finds the game folder, checks that the game file is the right version, translates the game and builds the app. For a Windows game it looks in:
+Setup finds the game folder, checks that the game file is the right version, translates the game and builds the app. The app holds its own copy of the game in `Contents/Resources`. The copy is an APFS clone, so on the same disk it shares its disk space with your original and takes no extra space. After setup the app needs neither the repo nor the original game files.
+
+For a Windows game, setup looks for the game folder in:
 
 - Steam under Wine, CrossOver and Whisky, and Steam for Mac;
 - other Steam library folders;
@@ -37,7 +39,7 @@ The Hobbit and Marvel are Mac ports made by Feral Interactive. See [Checks](#che
 
 1. The translator turns every function in the game's code into C. A Mac game's code is a 32-bit Intel Mac program (Mach-O); a Windows game's code is a 32-bit Windows exe (PE).
 2. The runtime stands in for the parts of the system the game calls. For a Mac game, that is macOS, OpenGL, Core Audio and Steam. For a Windows game, it is Windows and Direct3D 9, in `windows/`.
-3. Clang compiles both into one program for Apple Silicon. The program loads the game's data from your copy of the game.
+3. Clang compiles both into one program for Apple Silicon. The program loads the game's data from the copy of the game inside the app.
 
 One part of the Mac games still needs Rosetta 2. They compile their shaders with NVIDIA's Cg library, which has no Apple Silicon version. The runtime sends each Cg call to `cghelper`, a small Intel program that runs under Rosetta.
 
