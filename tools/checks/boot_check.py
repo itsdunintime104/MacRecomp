@@ -196,12 +196,21 @@ def main(argv: list[str] | None = None) -> int:
     if not exe.is_file():
         print(f"boot-check: missing executable {exe}; build the game first", file=sys.stderr)
         return EXIT_REFUSED
+    # The runtime opens the game's bundle, and its Cg helper loads Cg.framework, from <PREFIX>_APP.
+    app_var = f"{prof.env_prefix}_APP"
+    game_app = os.environ.get(app_var) or game_profile.find_game_app(prof, Path.home())
+    if not game_app:
+        searched = "\n  ".join(str(p) for p in game_profile.game_app_candidates(prof, Path.home()))
+        print(f"boot-check: refused, {prof.title} not found; set {app_var} or build the app. Searched:\n  "
+              f"{searched}", file=sys.stderr)
+        return EXIT_REFUSED
     log_dir = prof.root / "build.nosync" / "checks"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"boot-{datetime.datetime.now():%Y%m%d-%H%M%S}.log"
     scratch = Path(tempfile.mkdtemp(prefix="boot-check-"))
     try:
         env = {**os.environ, **GAME_ENV, **(HEAP_GUARD_ENV if args.heap_guard else {}),
+               app_var: str(game_app),
                f"{prof.env_prefix}_SAVE_DIR": str(prepare_saves(prof.support_dir, scratch))}
         exited_early, code = run_game([str(exe), str(prof.binary)], env, log_path, args.seconds)
     finally:

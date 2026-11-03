@@ -135,6 +135,25 @@ def load(path: str | Path) -> Profile:
     )
 
 
+def game_app_candidates(profile: Profile, home: Path) -> list[Path]:
+    """Places of the game's .app bundle, in the order a check tries them: the copy inside
+    the app in build.nosync, the copy inside the installed app, then Steam."""
+    bundle = Path(profile.steam_app).name
+    return [
+        profile.root / "build.nosync" / f"{profile.app_name}.app" / "Contents" / "Resources" / bundle,
+        home / "Applications" / f"{profile.app_name}.app" / "Contents" / "Resources" / bundle,
+        home / "Library" / "Application Support" / "Steam" / "steamapps" / "common" / profile.steam_app,
+    ]
+
+
+def find_game_app(profile: Profile, home: Path) -> Path | None:
+    """The first game_app_candidates entry that holds the game's executable."""
+    for app in game_app_candidates(profile, home):
+        if (app / "Contents" / "MacOS" / profile.game_exe).is_file():
+            return app
+    return None
+
+
 def shell_lines(profile: Profile) -> list[str]:
     pairs = [
         ("GAME_ROOT", str(profile.root)),

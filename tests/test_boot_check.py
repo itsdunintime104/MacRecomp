@@ -162,3 +162,40 @@ def test_saves_are_copied_not_shared(tmp_path: Path, monkeypatch: pytest.MonkeyP
     empty = tmp_path / "scratch2"
     empty.mkdir()
     assert list(boot_check.prepare_saves("Missing", empty).iterdir()) == []
+
+
+def test_refuses_when_game_app_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    profile = _write_profile(tmp_path)
+    (tmp_path / "build.nosync").mkdir()
+    (tmp_path / "build.nosync" / "toy").write_text("")
+    monkeypatch.setattr(boot_check, "running_pids", lambda game_id: [])
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.delenv("TOY_APP", raising=False)
+    monkeypatch.setattr(boot_check, "run_game", lambda *a, **k: pytest.fail("game must not start"))
+    assert boot_check.main(["--profile", str(profile)]) == boot_check.EXIT_REFUSED
+    assert "set TOY_APP" in capsys.readouterr().err
+
+
+def test_game_runs_with_the_copy_inside_the_installed_app(tmp_path: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = _write_profile(tmp_path)
+    (tmp_path / "build.nosync").mkdir()
+    (tmp_path / "build.nosync" / "toy").write_text("")
+    home = tmp_path / "home"
+    game_app = home / "Applications" / "Toy.app" / "Contents" / "Resources" / "Toy"
+    (game_app / "Contents" / "MacOS").mkdir(parents=True)
+    (game_app / "Contents" / "MacOS" / "toy.exe").write_text("")
+    monkeypatch.setattr(boot_check, "running_pids", lambda game_id: [])
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("TOY_APP", raising=False)
+    seen: dict[str, str] = {}
+
+    def fake_run(cmd: list[str], env: dict[str, str], log_path: Path, seconds: int) -> tuple[bool, int | None]:
+        seen.update(env)
+        log_path.write_text("")
+        return False, None
+
+    monkeypatch.setattr(boot_check, "run_game", fake_run)
+    boot_check.main(["--profile", str(profile)])
+    assert seen["TOY_APP"] == str(game_app)

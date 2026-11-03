@@ -10,9 +10,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 STEAM_COMMON = Path.home() / "Library/Application Support/Steam/steamapps/common"
+APPLICATIONS = Path.home() / "Applications"
+# (game bundle under Steam's common folder, name of the recompiled app that holds a copy of it)
 BUNDLES = [
-    "LEGO - The Hobbit/LEGO The Hobbit.app",
-    "LEGO Marvel Super Heroes/LEGO Marvel Super Heroes.app",
+    ("LEGO - The Hobbit/LEGO The Hobbit.app", "Hobbit Recompiled"),
+    ("LEGO Marvel Super Heroes/LEGO Marvel Super Heroes.app", "Superheros Bricks Recompiled"),
 ]
 CG_SUBPATHS = [
     "Contents/Frameworks/Cg.framework/Versions/A/Cg",
@@ -30,11 +32,20 @@ SOURCES = [
 ]
 
 
-@pytest.mark.parametrize("bundle", BUNDLES)
-def test_thunk_cg(tmp_path: Path, bundle: str) -> None:
-    app = STEAM_COMMON / bundle
-    if not any((app / sub).is_file() for sub in CG_SUBPATHS):
-        pytest.skip(f"game bundle Cg.framework not found under {app}")
+def _game_app(bundle: str, app_name: str) -> Path | None:
+    """Steam's copy of the game, else the copy inside the installed recompiled app."""
+    for app in (STEAM_COMMON / bundle,
+                APPLICATIONS / f"{app_name}.app" / "Contents" / "Resources" / Path(bundle).name):
+        if any((app / sub).is_file() for sub in CG_SUBPATHS):
+            return app
+    return None
+
+
+@pytest.mark.parametrize(("bundle", "app_name"), BUNDLES)
+def test_thunk_cg(tmp_path: Path, bundle: str, app_name: str) -> None:
+    app = _game_app(bundle, app_name)
+    if app is None:
+        pytest.skip(f"Cg.framework of {Path(bundle).name} not found in Steam or in {app_name}.app")
     helper = tmp_path / "cghelper"
     subprocess.run(
         ["clang", "-std=gnu11", "-O1", "-arch", "x86_64", "-o", str(helper), "tools/cghelper/cghelper.c"],
