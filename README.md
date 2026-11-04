@@ -125,7 +125,7 @@ Run it from the game repo; a clean run prints `findings 0`:
 
 ## Runtime settings
 
-The game program reads these environment variables:
+The program of a Mac game reads these environment variables:
 
 | Variable | Effect |
 |---|---|
@@ -140,6 +140,8 @@ The game program reads these environment variables:
 | `RECOMP_STARTUP_VERBOSE=1` | Log how system functions are connected, and the start-up code, when the game starts |
 
 For the rest, search `runtime/src` for `getenv("RECOMP_`.
+
+The program of a Windows game reads `RECOMP_STARTUP_VERBOSE` from this table. Its other settings are named `HPRECOMP_*` and `HP_TRACE_*` (see `windows/README.md`); search `windows/runtime/src` for `getenv("HP`.
 
 ## Tests
 
@@ -161,13 +163,17 @@ Some tests compare with Apple's `otool`. If an Intel-only `otool` (from MacPorts
 | `tools/hobbit/` | tools that read a Mac game's code: disassembly, system-function patterns, code generators. The Marvel build uses them too |
 | `tools/game/` | the game profile (`game.toml`), step 1 of the build, and `feral_frontend.toml`, the byte patterns of the Feral front-end functions the runtime replaces |
 | `tools/cghelper/` | the Intel Cg helper |
+| `tools/glcount/` | `glcount.dylib`, which counts the OpenGL calls of each frame, and `glerr.dylib`, which names the OpenGL call that caused an OpenGL error |
+| `tools/refgame.py` | the paths of the reference game (The Hobbit) that the tests and tool defaults use |
 | `tools/checks/` | `recomp-check` and `boot-check` |
 | `tools/package/` | the app and its launcher |
 | `tools/perf/` | `plot_frames`, which turns a frame-time CSV file into a chart |
 | `runtime/` | start-up, game memory, system-function replacements, the SDL2 front end, a Steam stand-in and the frame-time overlay |
+| `runtime/tests/` | C test programs that the runtime tests in `tests/` build and run |
 | `build/Makefile` | compiles and links the translated C and the runtime |
 | `windows/` | the shared Windows runtime, the Windows-exe tools, tests, build rules and setup script (see `windows/README.md`) |
 | `tests/` | translator and runtime tests |
+| `tests/conformance/` | tests that run short x86 snippets in the Unicorn emulator and as translated C, and compare the results |
 
 ## License
 
