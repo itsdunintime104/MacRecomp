@@ -95,7 +95,7 @@ A Windows game repo also has this repo as `engine/`, but no `game.toml`. Its `ga
 
 `FUZZ=1` also runs a fuzzer. It runs small translated functions and the original code (in the Unicorn emulator) on random inputs and compares the results. It takes about a minute.
 
-**boot-check** (Mac games) runs the built game for `SECONDS` (default 60, at least 30) on a temporary copy of its saves. It passes only if:
+**boot-check** (Mac games) runs the built game for `SECONDS` (default 60, at least 30) on a temporary copy of its saves. It reads the game's files from `<PREFIX>_APP` (for example `HOBBIT_APP`) when it is set. Otherwise it uses the first copy it finds: inside the app in `build.nosync`, inside the installed app in `~/Applications`, then in Steam. It passes only if:
 
 - the game is still running at the end, and its last stats line is recent;
 - that line shows more than 50 draws per frame, at least one texture upload and at least one audio render;
@@ -149,7 +149,7 @@ The tests use The Hobbit (Steam build 84019) as the reference game. Run them fro
 ../.venv/bin/python -m pytest tests
 ```
 
-`RECOMP_GAME_ROOT` sets the game folder and `HOBBIT_BIN` the game's code file. The translator tests for Windows code (`test_lift_import_tail.py`, `test_lift_entry_zf.py`, `test_lift_switch_byte_map.py`, `test_lift_fuzz_forms.py`, `test_seh_helpers.py`) make their own input and need no game files.
+`RECOMP_GAME_ROOT` sets the game folder and `HOBBIT_BIN` the game's code file. The Cg tests load Cg from The Hobbit and Marvel: from Steam, or from the copy inside the installed app. They skip a game that is in neither place. The translator tests for Windows code (`test_lift_import_tail.py`, `test_lift_entry_zf.py`, `test_lift_switch_byte_map.py`, `test_lift_fuzz_forms.py`, `test_seh_helpers.py`) make their own input and need no game files.
 
 Some tests compare with Apple's `otool`. If an Intel-only `otool` (from MacPorts, for example) comes first in `PATH`, they fail with an `xcrun` error. Put `/usr/bin` first in `PATH`.
 
