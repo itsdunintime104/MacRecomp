@@ -15,6 +15,8 @@ This repo is the shared engine. It holds no game code or game files. Each game h
 
 Setup finds the game folder, checks that the game file is the right version, translates the game and builds the app. The app holds its own copy of the game in `Contents/Resources`. The copy is an APFS clone, so on the same disk it shares its disk space with your original and takes no extra space. After setup the app needs neither the repo nor the original game files.
 
+If setup says the game file does not match, you have another version of the game. For a Windows game, `./setup.sh --ignore-checksum` skips that check and builds from your file anyway. This is not supported: the translation is made for one exact file, so the build may fail or the game may crash.
+
 For a Windows game, setup looks for the game folder in:
 
 - Steam under Wine, CrossOver and Whisky, and Steam for Mac;
@@ -79,7 +81,7 @@ A Windows game repo also has this repo as `engine/`, but no `game.toml`. Its `ga
 - `windows/tools/pe/analyze_pe.py` writes the list of the game's functions to `recon/`, from the exe and a Ghidra export.
 - `windows/tools/pe/run_lift_pe.py` translates the exe.
 - `windows/build/game.mk` compiles the translated C with the Windows runtime in `windows/runtime/`. Direct3D 9 goes to DXVK, which draws with Vulkan on KosmicKrisp. vkd3d-shader compiles the shaders.
-- `windows/setup.sh` runs every step, from finding the game folder to installing the app.
+- `windows/setup.sh` runs every step, from finding the game folder to installing the app. It stops if the exe's checksum is not the one in `game.conf`; with `--ignore-checksum` it warns and continues.
 
 `windows/README.md` lists the files a game repo must have. [WizardBrick-Recomp's docs/BUILDING.md](https://github.com/itsdunintime104/WizardBrick-Recomp/blob/main/docs/BUILDING.md) lists the build steps.
 
