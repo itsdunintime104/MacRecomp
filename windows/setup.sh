@@ -4,7 +4,7 @@
 # program and installs the app. The game repo's game.conf names the game
 # (windows/README.md); its setup.sh runs this script:
 #   exec "$(dirname "$0")/engine/windows/setup.sh" "$@"
-# Usage: ./setup.sh [--check] [--force] [--no-install] [<post-install option>] [--dry-run] [--help] [game folder]
+# Usage: ./setup.sh [--check] [--force] [--ignore-checksum] [--no-install] [<post-install option>] [--dry-run] [--help] [game folder]
 set -eu
 
 # The engine (lifter and generic runtime) holds this script; the game repo
@@ -39,10 +39,13 @@ KK_PREFIX="$DEPS/kosmickrisp"
 
 CHECK_ONLY=0
 FORCE=0
+IGNORE_CHECKSUM=0
 INSTALL=1
 POST_INSTALL=1
 DRY_RUN=0
 GAME_ARG=""
+# sha256 of the copied exe; empty in a dry run, which copies nothing.
+SHA=""
 
 usage() {
     cat <<USAGE
@@ -59,6 +62,9 @@ game folder   The folder that holds $GAME_EXE and its $DATA_GLOB files,
 Options:
   --check       Check the requirements only, then stop.
   --force       Translate again even if generated.nosync is complete.
+  --ignore-checksum
+                Build from $GAME_EXE even if it is not the supported
+                file. Not supported: the build may fail or the app may crash.
   --no-install  Build the app but do not copy it to ~/Applications.
 USAGE
     if [ -n "$POST_INSTALL_OPTION" ]; then
@@ -79,6 +85,7 @@ for arg in "$@"; do
     case "$arg" in
         --check) CHECK_ONLY=1 ;;
         --force) FORCE=1 ;;
+        --ignore-checksum) IGNORE_CHECKSUM=1 ;;
         --no-install) INSTALL=0 ;;
         --dry-run) DRY_RUN=1 ;;
         --help|-h) usage; exit 0 ;;
@@ -407,9 +414,16 @@ or run ./setup.sh \"<game folder>\"."
     echo "+ shasum -a 256 $ORIG"
     [ "$DRY_RUN" -eq 1 ] && return
     SHA=$(shasum -a 256 "$ORIG" | awk '{print $1}')
-    [ "$SHA" = "$BINARY_SHA256" ] || fail "the game binary does not match (sha256 $SHA).
-$VERSION_HINT"
-    echo "sha256 matches"
+    if [ "$SHA" = "$BINARY_SHA256" ]; then
+        echo "sha256 matches"
+    elif [ "$IGNORE_CHECKSUM" -eq 1 ]; then
+        echo "setup: warning: the game binary does not match (sha256 $SHA); continuing because of --ignore-checksum.
+This exe is not supported: the build may fail or the app may crash. Give this sha256 in any issue you open." >&2
+    else
+        fail "the game binary does not match (sha256 $SHA).
+$VERSION_HINT
+To build from this exe anyway, add --ignore-checksum. That is not supported: the build may fail or the app may crash."
+    fi
 }
 
 setup_venv() {
@@ -432,14 +446,24 @@ build_deps() {
 
 translate() {
     step "6/$STEPS Translating the game code"
+    # source.sha256 names the exe that generated.nosync is the translation of. A
+    # folder without it is from a setup.sh that accepted only the supported exe.
+    lifted=$BINARY_SHA256
+    if [ -f "$GEN/source.sha256" ]; then lifted=$(cat "$GEN/source.sha256"); fi
     if [ -f "$GEN/lift_report.json" ] && [ "$FORCE" -eq 0 ]; then
-        echo "generated.nosync is complete; skipping (use --force to translate again)"
-        return
+        if [ "$DRY_RUN" -eq 1 ] || [ "$lifted" = "$SHA" ]; then
+            echo "generated.nosync is complete; skipping (use --force to translate again)"
+            return
+        fi
+        echo "generated.nosync is the translation of another exe (sha256 $lifted); translating again"
     fi
-    # The game repo's recon files hold the committed function analysis of this exact binary.
+    # A translation that stops part way must not pass as complete on the next run.
+    run rm -f "$GEN/lift_report.json" "$GEN/source.sha256"
+    # The game repo's recon files hold the committed function analysis of the supported binary.
     run_locked "$VENV/bin/python" -I "$WIN/tools/pe/run_lift_pe.py" --engine "$ENGINE" \
         --analysis "$ROOT/$RECON_ANALYSIS" --switch "$ROOT/$RECON_SWITCH" \
         --bin "$ORIG" --out "$GEN" --prefix "$LIFT_PREFIX" --jobs "$NCPU"
+    [ "$DRY_RUN" -eq 1 ] || printf '%s\n' "$SHA" > "$GEN/source.sha256"
 }
 
 build() {
