@@ -52,7 +52,7 @@ Shell variables, read by `setup.sh` (sourced) and by `game.mk`. Values must not 
 | `GAME_REG_KEY` | `SOFTWARE\WB Games\LEGOHarryPotter` | the one HKLM registry key the guest can open |
 | `APP_GAME_TITLE` | `LEGO Harry Potter: Years 1-4` | title in messages |
 | `APP_IMAGE` | `lhp_win32.exe` | file name of the image copy in `orig.nosync/` |
-| `BINARY_SHA256` | | sha256 of the supported exe |
+| `BINARY_SHA256` | | sha256 of the supported exe; `setup.sh` stops on any other file unless it runs with `--ignore-checksum` |
 | `LIFT_PREFIX` | `lhp` | file prefix of the lifted C |
 | `RECON_ANALYSIS`, `RECON_SWITCH` | `recon/analysis.json`, `recon/switch_tables.json` | lift inputs; `names.json` and `entry_zf.json` are read from the folder of `RECON_ANALYSIS`; `analyze_pe.py --entry-zf-out` writes `entry_zf.json` |
 | `GAME_FOLDER` | `LEGO Harry Potter` | folder name under `steamapps/common`, `~/Games` and drives |
@@ -67,6 +67,10 @@ A game repo's `setup.sh`:
 #!/bin/sh
 exec "$(dirname "$0")/engine/windows/setup.sh" "$@"
 ```
+
+`setup.sh` copies the game's exe and stops if its sha256 is not `BINARY_SHA256`, because the files in `recon/` describe that one exe. `./setup.sh --ignore-checksum` prints a warning and builds from the other exe anyway. That build is not supported: it may fail, or the game may crash.
+
+`setup.sh` writes the sha256 of the exe it translated to `generated.nosync/source.sha256`. When the exe changes, it translates again, so the code of one exe is never built with another.
 
 ### Game hooks
 
